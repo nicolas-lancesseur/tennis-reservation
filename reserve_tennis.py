@@ -84,18 +84,47 @@ def reserve_court(target_tuesday: datetime, rain_expected: bool) -> None:
     print(f"  Type de terrain : {court_type} — ordre de préférence : {court_order}")
  
     with sync_playwright() as p:
-        browser = p.chromium.launch(headless=True)
-        context = browser.new_context(viewport={"width": 1280, "height": 900})
-        page    = context.new_page()
+        browser = p.chromium.launch(
+            headless=True,
+            args=['--disable-blink-features=AutomationControlled']
+        )
+        context = browser.new_context(
+            viewport={"width": 1366, "height": 768},
+            user_agent=(
+                'Mozilla/5.0 (Windows NT 10.0; Win64; x64) '
+                'AppleWebKit/537.36 (KHTML, like Gecko) '
+                'Chrome/125.0.0.0 Safari/537.36'
+            )
+        )
+        page = context.new_page()
+        # Masquer le flag "webdriver" qui trahit les navigateurs automatisés
+        page.add_init_script(
+            "Object.defineProperty(navigator, 'webdriver', {get: () => undefined})"
+        )
  
         # ── 1. Connexion ───────────────────────────────────────────────────
         print("  Connexion au site...")
         page.goto(CLUB_URL)
         page.wait_for_load_state("load", timeout=30000)
+        # Attendre que le JS de la page de login s'initialise complètement
         page.wait_for_selector('input[name="userid"]', state="attached", timeout=15000)
-        page.locator('input[name="userid"]').fill(USERNAME,  force=True)
-        page.locator('input[name="userkey"]').fill(PASSWORD, force=True)
-        page.click('button:has-text("Entrer")')
+        time.sleep(2)
+        # Remplir via JavaScript pour déclencher tous les événements natifs
+        page.evaluate(f"""
+            () => {{
+                const u = document.querySelector('input[name="userid"]');
+                const p = document.querySelector('input[name="userkey"]');
+                const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set;
+                setter.call(u, '{USERNAME}');
+                u.dispatchEvent(new Event('input', {{bubbles:true}}));
+                u.dispatchEvent(new Event('change', {{bubbles:true}}));
+                setter.call(p, '{PASSWORD}');
+                p.dispatchEvent(new Event('input', {{bubbles:true}}));
+                p.dispatchEvent(new Event('change', {{bubbles:true}}));
+            }}
+        """)
+        time.sleep(1)
+        page.click('button:has-text("Entrer")', force=True)
  
         # Le site affiche une page "Veuillez patienter..." avant de charger
         # le planning (double navigation + AJAX). On poll directement le DOM
