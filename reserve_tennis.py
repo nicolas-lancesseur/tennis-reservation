@@ -91,8 +91,11 @@ def reserve_court(target_tuesday: datetime, rain_expected: bool) -> None:
         print("  Connexion au site...")
         page.goto(CLUB_URL)
         page.wait_for_load_state("networkidle")
-        page.fill('input[name="userid"]',  USERNAME)
-        page.fill('input[name="userkey"]', PASSWORD)
+        # force=True bypasse la vérification de visibilité (élément présent
+        # dans le DOM mais pas encore rendu visible en mode headless)
+        page.wait_for_selector('input[name="userid"]', state="attached", timeout=15000)
+        page.locator('input[name="userid"]').fill(USERNAME,  force=True)
+        page.locator('input[name="userkey"]').fill(PASSWORD, force=True)
         page.click('button:has-text("Entrer")')
         page.wait_for_load_state("networkidle")
         print("  Connecté.")
