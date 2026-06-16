@@ -97,7 +97,8 @@ def reserve_court(target_tuesday: datetime, rain_expected: bool) -> None:
         page.locator('input[name="userid"]').fill(USERNAME,  force=True)
         page.locator('input[name="userkey"]').fill(PASSWORD, force=True)
         page.click('button:has-text("Entrer")')
-        page.wait_for_load_state("networkidle")
+        # Attendre que le planning soit entièrement chargé (btn_plus = repère fiable)
+        page.wait_for_selector('#btn_plus', state='visible', timeout=45000)
         print("  Connecté.")
  
         # ── 2. Navigation vers le mardi cible ──────────────────────────────
@@ -108,7 +109,9 @@ def reserve_court(target_tuesday: datetime, rain_expected: bool) -> None:
         for _ in range(days_to_advance):
             # Bouton ">>" identifié par id="btn_plus" sur la plateforme Premier Service
             page.click('#btn_plus')
+            # Attendre que le planning du jour suivant soit rechargé
             page.wait_for_load_state("networkidle")
+            page.wait_for_selector('#btn_plus', state='visible', timeout=15000)
  
         # ── 3. Sélection du créneau 20h00 ─────────────────────────────────
         # Structure réelle du site Premier Service :
