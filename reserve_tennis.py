@@ -12,6 +12,7 @@ Logique :
  
 import os
 import sys
+import time
 import requests
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
@@ -90,18 +91,34 @@ def reserve_court(target_tuesday: datetime, rain_expected: bool) -> None:
         # ── 1. Connexion ───────────────────────────────────────────────────
         print("  Connexion au site...")
         page.goto(CLUB_URL)
-        # Utiliser 'load' et non 'networkidle' : la page ics.php a un polling
-        # AJAX temps réel (horloge) qui empêche networkidle d'être atteint
         page.wait_for_load_state("load", timeout=30000)
         page.wait_for_selector('input[name="userid"]', state="attached", timeout=15000)
         page.locator('input[name="userid"]').fill(USERNAME,  force=True)
         page.locator('input[name="userkey"]').fill(PASSWORD, force=True)
         page.click('button:has-text("Entrer")')
-        page.wait_for_load_state("load", timeout=30000)
-        # Screenshot de debug pour vérifier l'état réel après login
-        page.screenshot(path="apres_login.png")
-        # Attendre que le bouton >> soit visible dans le planning
-        page.wait_for_selector('#btn_plus', state='visible', timeout=30000)
+ 
+        # Le site affiche une page "Veuillez patienter..." avant de charger
+        # le planning (double navigation + AJAX). On poll directement le DOM
+        # via JS pour bypasser le suivi de navigation de Playwright.
+        print("  Attente du planning (peut prendre 20-30s)...")
+        planning_loaded = False
+        for _ in range(90):  # jusqu'à 90 secondes
+            try:
+                visible = page.evaluate(
+                    "() => { const el = document.getElementById('btn_plus'); "
+                    "return el !== null && el.offsetParent !== null; }"
+                )
+                if visible:
+                    planning_loaded = True
+                    break
+            except Exception:
+                pass  # page en cours de navigation, on réessaie
+            time.sleep(1)
+ 
+        if not planning_loaded:
+            page.screenshot(path="apres_login.png")
+            raise RuntimeError("Planning non chargé après 90s. Voir apres_login.png")
+ 
         print("  Connecté et planning chargé.")
  
         # ── 2. Navigation vers le mardi cible ──────────────────────────────
@@ -112,8 +129,19 @@ def reserve_court(target_tuesday: datetime, rain_expected: bool) -> None:
         for _ in range(days_to_advance):
             # Bouton ">>" identifié par id="btn_plus" sur la plateforme Premier Service
             page.click('#btn_plus')
-            page.wait_for_load_state("load", timeout=15000)
-            page.wait_for_selector('#btn_plus', state='visible', timeout=15000)
+            # Attendre que le planning du jour suivant soit rechargé
+            time.sleep(2)
+            for _ in range(20):
+                try:
+                    visible = page.evaluate(
+                        "() => { const el = document.getElementById('btn_plus'); "
+                        "return el !== null && el.offsetParent !== null; }"
+                    )
+                    if visible:
+                        break
+                except Exception:
+                    pass
+                time.sleep(1)
  
         # ── 3. Sélection du créneau 20h00 ─────────────────────────────────
         # Structure réelle du site Premier Service :
