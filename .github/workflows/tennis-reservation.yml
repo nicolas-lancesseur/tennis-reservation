@@ -47,4 +47,5 @@ jobs:
           path: |
             confirmation.png
             erreur_aucun_terrain.png
+            apres_login.png
           if-no-files-found: ignore
