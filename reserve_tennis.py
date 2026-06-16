@@ -106,40 +106,33 @@ def reserve_court(target_tuesday: datetime, rain_expected: bool) -> None:
         print(f"  Navigation : +{days_to_advance} jour(s) → {target_tuesday.strftime('%A %d/%m/%Y')}")
  
         for _ in range(days_to_advance):
-            # Sélecteur de la flèche "jour suivant" — à ajuster si nécessaire
-            # après un premier test en inspectant le HTML post-connexion
-            arrow = page.locator(
-                'img[src*="fleche_droite"], '
-                'img[src*="right_arrow"], '
-                'img[alt*="uivant"], '
-                '[title*="uivant"], '
-                '.navigation-next, '
-                'td.calnav_next'
-            ).first
-            arrow.click()
+            # Bouton ">>" identifié par id="btn_plus" sur la plateforme Premier Service
+            page.click('#btn_plus')
             page.wait_for_load_state("networkidle")
  
-        # ── 3. Sélection du créneau 20h00–21h00 ───────────────────────────
+        # ── 3. Sélection du créneau 20h00 ─────────────────────────────────
+        # Structure réelle du site Premier Service :
+        # chaque créneau est un <p id="{HH}_{MM}_{terrain_num}">
+        # Ex : id="20_0_7" = 20h00 sur TCIM-7
         booked = False
         for court_num in court_order:
             print(f"  Tentative terrain {court_num}...")
-            # Sélecteurs précis pour la case "20:00 – 21:00" du terrain court_num.
-            # On utilise = (égalité exacte) ou ^= (commence par) pour éviter
-            # de matcher par erreur d'autres créneaux contenant "20" (ex: 9h20).
-            slot = page.locator(
-                f'[data-terrain="{court_num}"][data-heure="{BOOKING_HOUR}"],'
-                f'[data-terrain="{court_num}"][data-heure^="{BOOKING_HOUR}"],'
-                f'tr:nth-child({court_num}) td[data-heure="{BOOKING_HOUR}"],'
-                f'td.heure2000.terrain{court_num},'
-                f'td[id*="t{court_num}"][id*="2000"]'
-            ).first
+            slot_id = f"20_0_{court_num}"
+            slot = page.locator(f'[id="{slot_id}"]')
  
-            if slot.count() > 0 and slot.is_visible() and slot.is_enabled():
-                slot.click()
-                page.wait_for_load_state("networkidle")
-                booked = True
-                print(f"  ✓ Terrain {court_num} sélectionné.")
-                break
+            if slot.count() > 0:
+                txt = slot.inner_text().strip()
+                if txt == "" or txt == "20h":
+                    # Case libre : on clique
+                    slot.click()
+                    page.wait_for_load_state("networkidle")
+                    booked = True
+                    print(f"  ✓ Terrain {court_num} (id={slot_id}) sélectionné.")
+                    break
+                else:
+                    print(f"  → Terrain {court_num} déjà réservé ({txt[:40]}), on passe.")
+            else:
+                print(f"  → id={slot_id} introuvable sur la page.")
  
         if not booked:
             page.screenshot(path="erreur_aucun_terrain.png")
