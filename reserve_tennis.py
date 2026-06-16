@@ -90,16 +90,19 @@ def reserve_court(target_tuesday: datetime, rain_expected: bool) -> None:
         # ── 1. Connexion ───────────────────────────────────────────────────
         print("  Connexion au site...")
         page.goto(CLUB_URL)
-        page.wait_for_load_state("networkidle")
-        # force=True bypasse la vérification de visibilité (élément présent
-        # dans le DOM mais pas encore rendu visible en mode headless)
+        # Utiliser 'load' et non 'networkidle' : la page ics.php a un polling
+        # AJAX temps réel (horloge) qui empêche networkidle d'être atteint
+        page.wait_for_load_state("load", timeout=30000)
         page.wait_for_selector('input[name="userid"]', state="attached", timeout=15000)
         page.locator('input[name="userid"]').fill(USERNAME,  force=True)
         page.locator('input[name="userkey"]').fill(PASSWORD, force=True)
         page.click('button:has-text("Entrer")')
-        # Attendre que le planning soit entièrement chargé (btn_plus = repère fiable)
-        page.wait_for_selector('#btn_plus', state='visible', timeout=45000)
-        print("  Connecté.")
+        page.wait_for_load_state("load", timeout=30000)
+        # Screenshot de debug pour vérifier l'état réel après login
+        page.screenshot(path="apres_login.png")
+        # Attendre que le bouton >> soit visible dans le planning
+        page.wait_for_selector('#btn_plus', state='visible', timeout=30000)
+        print("  Connecté et planning chargé.")
  
         # ── 2. Navigation vers le mardi cible ──────────────────────────────
         now_paris      = datetime.now(PARIS_TZ)
@@ -109,8 +112,7 @@ def reserve_court(target_tuesday: datetime, rain_expected: bool) -> None:
         for _ in range(days_to_advance):
             # Bouton ">>" identifié par id="btn_plus" sur la plateforme Premier Service
             page.click('#btn_plus')
-            # Attendre que le planning du jour suivant soit rechargé
-            page.wait_for_load_state("networkidle")
+            page.wait_for_load_state("load", timeout=15000)
             page.wait_for_selector('#btn_plus', state='visible', timeout=15000)
  
         # ── 3. Sélection du créneau 20h00 ─────────────────────────────────
