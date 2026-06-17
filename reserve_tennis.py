@@ -2,18 +2,11 @@
 """
 Réservation automatique de terrain de tennis
 Tennis Club Issy-les-Moulineaux — plateforme Premier Service
-Logique :
-  - Lance le mercredi à 00h01 heure de Paris
-  - Réserve un terrain pour le mardi suivant à 20h00
-  - Si pluie prévue l'après-midi → terrain couvert (1-4)
-  - Si pas de pluie → terrain extérieur, préférence 7 ou 8
-  - Partenaire : Anthony Martin
 """
 
 import os
 import sys
 import time
-import hashlib
 import requests
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
@@ -22,7 +15,6 @@ from playwright_stealth import stealth_sync
 
 # ── Configuration ─────────────────────────────────────────────────────────────
 CLUB_URL  = "https://www.premier-service.fr/_start/index.php?club=57920018"
-ICS_URL   = "https://www.premier-service.fr/5.12.04/ics.php"
 USERNAME  = os.environ["TENNIS_USERNAME"]
 PASSWORD  = os.environ["TENNIS_PASSWORD"]
 PARTNER   = "Anthony Martin"
@@ -93,49 +85,33 @@ def reserve_court(target_tuesday: datetime, rain_expected: bool) -> None:
         stealth_sync(page)
 
         # ── 1. Connexion ───────────────────────────────────────────────────
-        # Le site redirige CLUB_URL → ics.php via JavaScript.
-        # Le formulaire de login se trouve sur ics.php.
-        # Le bouton "Entrer" a un onClick qui calcule le MD5 avant soumission.
         print("  Chargement de la page de connexion...")
         page.goto(CLUB_URL, wait_until="load", timeout=30000)
 
-        # Attendre la redirection vers ics.php
+        # La page JS redirige automatiquement vers ics.php
         try:
             page.wait_for_url("**/ics.php**", timeout=20000)
             print(f"  Redirigé vers : {page.url}")
         except PlaywrightTimeoutError:
             print(f"  Pas de redirection automatique, URL : {page.url}")
 
-        # Attendre le formulaire de login
+        # Attendre le formulaire
         page.wait_for_selector('input[name="userid"]', state="attached", timeout=15000)
         print("  Formulaire de login détecté.")
 
-        # Remplissage via clavier (les champs sont cachés ; la touche Tab
-        # déclenche le handler onkeypress qui bascule le focus sur userkey)
-        page.evaluate("document.querySelector('input[name=\"userid\"]').focus()")
-        page.keyboard.type(USERNAME)
-        page.keyboard.press("Tab")
-        time.sleep(0.5)
-        page.keyboard.type(PASSWORD)
-        time.sleep(0.5)
-
-        # Diagnostics avant soumission
-        form_info = page.evaluate("""() => {
-            const form = document.querySelector('form');
-            if (!form) return {error: 'pas de form'};
-            const fields = {};
-            form.querySelectorAll('input').forEach(i => {
-                fields[i.name || i.id || '?'] = i.value ? '(rempli)' : '(vide)';
-            });
-            return { action: form.action, method: form.method, fields: fields };
-        }""")
-        print(f"  Form → action={form_info.get('action')}, method={form_info.get('method')}")
-        print(f"  Champs : {form_info.get('fields')}")
-
-        # Cliquer le bouton "Entrer" via Playwright (force=True car élément caché).
-        # Cela déclenche le onClick qui calcule le MD5 avant de soumettre.
-        print("  Clic sur le bouton Entrer...")
-        page.locator('button.ui-button').click(force=True)
+        # Injection directe des identifiants puis appel des fonctions JS
+        # exactement comme le fait le bouton "Entrer" :
+        #   onclick="idact='101'; fsmd5(); fs(document.forms[0]);"
+        # fsmd5() lit userkey.value, calcule le MD5, le met dans usermd5.
+        # fs() soumet le formulaire.
+        page.evaluate(f"""
+            document.querySelector('input[name="userid"]').value = {repr(USERNAME)};
+            document.querySelector('input[name="userkey"]').value = {repr(PASSWORD)};
+            document.forms[0].idact.value = '101';
+            fsmd5();
+            fs(document.forms[0]);
+        """)
+        print("  Formulaire soumis.")
 
         # ── 2. Attente du planning ─────────────────────────────────────────
         print("  Attente du planning (peut prendre 20-30s)...")
@@ -155,10 +131,8 @@ def reserve_court(target_tuesday: datetime, rain_expected: bool) -> None:
         if not planning_loaded:
             page.screenshot(path="apres_login.png")
             print(f"  URL au moment de l'erreur : {page.url}")
-            # Diagnostic supplémentaire : titre et contenu visible
             try:
-                title = page.title()
-                print(f"  Titre de la page : {title}")
+                print(f"  Titre de la page : {page.title()}")
             except Exception:
                 pass
             raise RuntimeError("Planning non chargé après 90s. Voir apres_login.png")
