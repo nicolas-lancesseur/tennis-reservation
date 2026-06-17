@@ -234,9 +234,9 @@ if __name__ == "__main__":
 
     # Garde-fou : s'exécuter uniquement le mercredi à Paris
     # (les deux crons UTC peuvent déclencher le workflow le mardi ou le mercredi)
-    if now_paris.weekday() != 2:
-        print(f"Ce n'est pas mercredi à Paris. Abandon.")
-        sys.exit(0)
+    # if now_paris.weekday() != 2:
+    #    print(f"Ce n'est pas mercredi à Paris. Abandon.")
+    #    sys.exit(0)
 
     target_tuesday = get_next_tuesday(now_paris)
     print(f"Cible : mardi {target_tuesday.strftime('%d/%m/%Y')} à 20h00\n")
