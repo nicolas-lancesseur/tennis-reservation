@@ -105,15 +105,14 @@ def reserve_court(target_tuesday: datetime, rain_expected: bool) -> None:
         print("  Connexion au site...")
         page.goto(CLUB_URL)
         page.wait_for_selector('input[name="userid"]', state="attached", timeout=15000)
-        # Les champs sont dans le DOM mais hidden : on les focus via JS
-        # puis on frappe les touches clavier pour déclencher les handlers onkeypress
+        # Focus sur userid via JS, puis Tab pour passer à userkey
+        # (le onkeypress du formulaire gère Tab/keyCode 9 → userkey.focus())
         page.evaluate("document.querySelector('input[name=\"userid\"]').focus()")
         page.keyboard.type(USERNAME)
+        page.keyboard.press("Tab")   # bascule sur userkey via le handler onkeypress
         time.sleep(0.3)
-        page.evaluate("document.querySelector('input[name=\"userkey\"]').focus()")
         page.keyboard.type(PASSWORD)
         time.sleep(0.3)
-        # Soumettre le formulaire via le bouton (JS click pour bypasser la visibilité)
         page.evaluate("document.querySelector('button.ui-button').click()")
 
         # Le site affiche une page "Veuillez patienter..." avant de charger
