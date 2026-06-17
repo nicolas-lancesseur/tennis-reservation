@@ -21,27 +21,26 @@ from playwright.sync_api import sync_playwright, TimeoutError as PlaywrightTimeo
 from playwright_stealth import stealth_sync
 
 # ── Configuration ─────────────────────────────────────────────────────────────
-CLUB_URL    = "https://www.premier-service.fr/_start/index.php?club=57920018"
-USERNAME    = os.environ["TENNIS_USERNAME"]
-PASSWORD    = os.environ["TENNIS_PASSWORD"]
-PARTNER     = "Anthony Martin"
-# Créneau cible : case "20:00 – 21:00" sur le planning du site
-BOOKING_HOUR      = "20:00"
-BOOKING_HOUR_END  = "21:00"
-PARIS_TZ    = ZoneInfo("Europe/Paris")
+CLUB_URL  = "https://www.premier-service.fr/_start/index.php?club=57920018"
+USERNAME  = os.environ["TENNIS_USERNAME"]
+PASSWORD  = os.environ["TENNIS_PASSWORD"]
+PARTNER   = "Anthony Martin"
+PARIS_TZ  = ZoneInfo("Europe/Paris")
 
-# Coordonnées d'Issy-les-Moulineaux
-LATITUDE  = 48.8234
-LONGITUDE = 2.2735
-
-# Seuil de probabilité de pluie (%) pour choisir un terrain couvert
+LATITUDE       = 48.8234
+LONGITUDE      = 2.2735
 RAIN_THRESHOLD = 40
+
+USER_AGENT = (
+    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) '
+    'AppleWebKit/537.36 (KHTML, like Gecko) '
+    'Chrome/125.0.0.0 Safari/537.36'
+)
 
 
 # ── Utilitaires ───────────────────────────────────────────────────────────────
 
 def get_next_tuesday(from_date: datetime) -> datetime:
-    """Retourne le prochain mardi à partir de from_date."""
     days_ahead = (1 - from_date.weekday()) % 7
     if days_ahead == 0:
         days_ahead = 7
@@ -49,11 +48,6 @@ def get_next_tuesday(from_date: datetime) -> datetime:
 
 
 def check_rain_forecast(target_date: datetime) -> bool:
-    """
-    Retourne True si la probabilité de pluie dépasse RAIN_THRESHOLD
-    sur au moins une heure entre 14h et 20h le jour cible.
-    Source : Open-Meteo (gratuit, sans clé API).
-    """
     url = "https://api.open-meteo.com/v1/forecast"
     params = {
         "latitude": LATITUDE,
@@ -78,12 +72,60 @@ def check_rain_forecast(target_date: datetime) -> bool:
     return max_prob >= RAIN_THRESHOLD
 
 
+def login_via_http() -> tuple[list[dict], str]:
+    """
+    Effectue le login en HTTP pur (sans navigateur).
+    Retourne les cookies de session et l'URL finale du planning.
+    """
+    session = requests.Session()
+    session.headers.update({
+        'User-Agent': USER_AGENT,
+        'Referer': CLUB_URL,
+    })
+
+    # 1. GET la page de login pour obtenir les cookies initiaux
+    session.get(CLUB_URL, timeout=15)
+
+    # 2. POST les identifiants
+    password_md5 = hashlib.md5(PASSWORD.encode()).hexdigest()
+    resp = session.post(
+        CLUB_URL,
+        data={
+            'userid':   USERNAME,
+            'userkey':  PASSWORD,
+            'usermd5':  password_md5,
+        },
+        timeout=15,
+        allow_redirects=True,
+    )
+
+    print(f"  URL après login : {resp.url}")
+    print(f"  Statut HTTP     : {resp.status_code}")
+
+    # 3. Convertir les cookies pour Playwright
+    cookies = [
+        {
+            'name':   c.name,
+            'value':  c.value,
+            'domain': c.domain or 'www.premier-service.fr',
+            'path':   c.path or '/',
+        }
+        for c in session.cookies
+    ]
+    return cookies, resp.url
+
+
 # ── Réservation ───────────────────────────────────────────────────────────────
 
 def reserve_court(target_tuesday: datetime, rain_expected: bool) -> None:
     court_order = [1, 2, 3, 4] if rain_expected else [7, 8, 5, 6, 9]
     court_type  = "couvert" if rain_expected else "extérieur"
     print(f"  Type de terrain : {court_type} — ordre de préférence : {court_order}")
+
+    # ── 1. Login HTTP (sans navigateur) ───────────────────────────────────
+    print("  Login HTTP...")
+    cookies, planning_url = login_via_http()
+    print(f"  {len(cookies)} cookie(s) récupéré(s).")
 
     with sync_playwright() as p:
         browser = p.chromium.launch(
@@ -92,48 +134,29 @@ def reserve_court(target_tuesday: datetime, rain_expected: bool) -> None:
         )
         context = browser.new_context(
             viewport={"width": 1366, "height": 768},
-            user_agent=(
-                'Mozilla/5.0 (Windows NT 10.0; Win64; x64) '
-                'AppleWebKit/537.36 (KHTML, like Gecko) '
-                'Chrome/125.0.0.0 Safari/537.36'
-            )
+            user_agent=USER_AGENT,
         )
+        stealth_sync(context.new_page())  # applique stealth sur une page temporaire
+        
+        # Injecter les cookies de session dans le contexte Playwright
+        if cookies:
+            context.add_cookies(cookies)
+
         page = context.new_page()
-        # Appliquer toutes les mesures anti-détection via playwright-stealth
         stealth_sync(page)
 
-        # ── 1. Connexion ───────────────────────────────────────────────────
-        print("  Connexion au site...")
-        page.goto(CLUB_URL)
-        page.wait_for_selector('input[name="userid"]', state="attached", timeout=15000)
+        # ── 2. Navigation directe vers le planning ─────────────────────────
+        # On va sur l'URL finale renvoyée par le login HTTP.
+        # Si c'est encore la page de login, on essaie CLUB_URL en fallback.
+        target_url = planning_url if planning_url != CLUB_URL else CLUB_URL
+        print(f"  Navigation vers : {target_url}")
+        page.goto(target_url, wait_until="load", timeout=30000)
 
-        # Le site stocke le mot de passe sous forme de hash MD5 dans le champ usermd5.
-        # Ce hash est normalement calculé côté client lors de la saisie.
-        # En headless, les événements clavier sur les champs cachés ne déclenchent
-        # pas ce calcul → on l'injecte directement en Python.
-        password_md5 = hashlib.md5(PASSWORD.encode()).hexdigest()
-
-        # Injection directe des valeurs dans le formulaire via JS
-        page.evaluate(f"""
-            document.querySelector('input[name="userid"]').value = {repr(USERNAME)};
-            var userkey = document.querySelector('input[name="userkey"]');
-            if (userkey) userkey.value = {repr(PASSWORD)};
-            var usermd5 = document.querySelector('input[name="usermd5"]');
-            if (usermd5) usermd5.value = '{password_md5}';
-        """)
-        time.sleep(0.3)
-        # Soumission native du formulaire
-        page.evaluate("document.querySelector('form').submit()")
-
-        # Le site affiche une page "Veuillez patienter..." avant de charger
-        # le planning (double navigation + AJAX). On poll directement le DOM
-        # via JS pour bypasser le suivi de navigation de Playwright.
+        # ── 3. Attente du planning ─────────────────────────────────────────
         print("  Attente du planning (peut prendre 20-30s)...")
         planning_loaded = False
-        for _ in range(90):  # jusqu'à 90 secondes
+        for _ in range(90):
             try:
-                # Vérifier l'existence dans le DOM (pas la visibilité)
-                # Le planning peut être dans le DOM mais invisible en headless
                 found = page.evaluate(
                     "() => document.getElementById('btn_plus') !== null"
                 )
@@ -141,28 +164,26 @@ def reserve_court(target_tuesday: datetime, rain_expected: bool) -> None:
                     planning_loaded = True
                     break
             except Exception:
-                pass  # page en cours de navigation, on réessaie
+                pass
             time.sleep(1)
 
         if not planning_loaded:
             page.screenshot(path="apres_login.png")
+            print(f"  URL au moment de l'erreur : {page.url}")
             raise RuntimeError("Planning non chargé après 90s. Voir apres_login.png")
 
         print("  Connecté et planning chargé.")
 
-        # ── 2. Navigation vers le mardi cible ──────────────────────────────
-        now_paris      = datetime.now(PARIS_TZ)
+        # ── 4. Navigation vers le mardi cible ─────────────────────────────
+        now_paris       = datetime.now(PARIS_TZ)
         days_to_advance = (target_tuesday.date() - now_paris.date()).days
         print(f"  Navigation : +{days_to_advance} jour(s) → {target_tuesday.strftime('%A %d/%m/%Y')}")
 
         for _ in range(days_to_advance):
             page.locator('#btn_plus').click(force=True)
-            time.sleep(2)  # laisser l'AJAX recharger le planning du jour suivant
+            time.sleep(2)
 
-        # ── 3. Sélection du créneau 20h00 ─────────────────────────────────
-        # Structure réelle du site Premier Service :
-        # chaque créneau est un <p id="{HH}_{MM}_{terrain_num}">
-        # Ex : id="20_0_7" = 20h00 sur TCIM-7
+        # ── 5. Sélection du créneau 20h00 ─────────────────────────────────
         booked = False
         for court_num in court_order:
             print(f"  Tentative terrain {court_num}...")
@@ -172,7 +193,6 @@ def reserve_court(target_tuesday: datetime, rain_expected: bool) -> None:
             if slot.count() > 0:
                 txt = slot.inner_text().strip()
                 if txt == "" or txt == "20h":
-                    # Case libre : on clique (force=True car éléments invisibles en headless)
                     slot.click(force=True)
                     time.sleep(2)
                     booked = True
@@ -190,7 +210,7 @@ def reserve_court(target_tuesday: datetime, rain_expected: bool) -> None:
                 "Voir erreur_aucun_terrain.png pour diagnostic."
             )
 
-        # ── 4. Sélection du partenaire ─────────────────────────────────────
+        # ── 6. Sélection du partenaire ─────────────────────────────────────
         print(f"  Sélection du partenaire : {PARTNER}...")
 
         partner_input = page.locator(
@@ -202,21 +222,18 @@ def reserve_court(target_tuesday: datetime, rain_expected: bool) -> None:
 
         if partner_input.count() > 0:
             partner_input.fill(PARTNER)
-            # Attente d'une suggestion d'autocomplétion
             try:
                 page.wait_for_selector(f'text="{PARTNER}"', timeout=5000)
                 page.click(f'text="{PARTNER}"')
             except PlaywrightTimeoutError:
-                # Pas d'autocomplétion — le texte saisi suffit peut-être
                 print("  (pas d'autocomplétion détectée, texte saisi directement)")
         else:
-            # Tentative avec un menu déroulant
             page.select_option(
                 'select[name*="partenaire"], select[name*="partner"]',
                 label=PARTNER
             )
 
-        # ── 5. Validation ──────────────────────────────────────────────────
+        # ── 7. Validation ──────────────────────────────────────────────────
         page.locator(
             'button:has-text("Valider"), '
             'button:has-text("Confirmer"), '
@@ -238,7 +255,6 @@ if __name__ == "__main__":
     print(f"Heure Paris : {now_paris.strftime('%A %d/%m/%Y %H:%M')}")
 
     # Garde-fou : s'exécuter uniquement le mercredi à Paris
-    # (les deux crons UTC peuvent déclencher le workflow le mardi ou le mercredi)
     # if now_paris.weekday() != 2:
     #     print(f"Ce n'est pas mercredi à Paris. Abandon.")
     #     sys.exit(0)
