@@ -105,19 +105,12 @@ def reserve_court(target_tuesday: datetime, rain_expected: bool) -> None:
         print("  Connexion au site...")
         page.goto(CLUB_URL)
         page.wait_for_selector('input[name="userid"]', state="attached", timeout=15000)
-        # userid (type=text) : force=True fonctionne
-        page.locator('input[name="userid"]').fill(USERNAME, force=True)
-        # userkey (type=password) : force=True ne fonctionne pas sur les champs password
-        # → on passe par JavaScript avec dispatch des événements nécessaires
-        page.evaluate(
-            "(pw) => {"
-            "  const f = document.querySelector('input[name=\"userkey\"]');"
-            "  f.value = pw;"
-            "  f.dispatchEvent(new Event('input', {bubbles:true}));"
-            "  f.dispatchEvent(new Event('change', {bubbles:true}));"
-            "}",
-            PASSWORD
-        )
+        # Simuler de vraies frappes clavier pour déclencher les handlers onkeypress
+        # (notamment le calcul du hash MD5 côté client dans le champ usermd5 caché)
+        page.locator('input[name="userid"]').click(force=True)
+        page.keyboard.type(USERNAME)
+        page.locator('input[name="userkey"]').click(force=True)
+        page.keyboard.type(PASSWORD)
         page.locator('button:has-text("Entrer")').click(force=True)
 
         # Le site affiche une page "Veuillez patienter..." avant de charger
