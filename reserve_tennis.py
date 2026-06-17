@@ -17,6 +17,7 @@ import requests
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 from playwright.sync_api import sync_playwright, TimeoutError as PlaywrightTimeoutError
+from playwright_stealth import stealth_sync
  
 # ── Configuration ─────────────────────────────────────────────────────────────
 CLUB_URL    = "https://www.premier-service.fr/_start/index.php?club=57920018"
@@ -97,10 +98,8 @@ def reserve_court(target_tuesday: datetime, rain_expected: bool) -> None:
             )
         )
         page = context.new_page()
-        # Masquer le flag "webdriver" qui trahit les navigateurs automatisés
-        page.add_init_script(
-            "Object.defineProperty(navigator, 'webdriver', {get: () => undefined})"
-        )
+        # Appliquer toutes les mesures anti-détection via playwright-stealth
+        stealth_sync(page)
  
         # ── 1. Connexion ───────────────────────────────────────────────────
         print("  Connexion au site...")
