@@ -22,6 +22,7 @@ from playwright_stealth import stealth_sync
 
 # ── Configuration ─────────────────────────────────────────────────────────────
 CLUB_URL  = "https://www.premier-service.fr/_start/index.php?club=57920018"
+ICS_URL   = "https://www.premier-service.fr/5.12.04/ics.php"
 USERNAME  = os.environ["TENNIS_USERNAME"]
 PASSWORD  = os.environ["TENNIS_PASSWORD"]
 PARTNER   = "Anthony Martin"
@@ -72,60 +73,12 @@ def check_rain_forecast(target_date: datetime) -> bool:
     return max_prob >= RAIN_THRESHOLD
 
 
-def login_via_http() -> tuple[list[dict], str]:
-    """
-    Effectue le login en HTTP pur (sans navigateur).
-    Retourne les cookies de session et l'URL finale du planning.
-    """
-    session = requests.Session()
-    session.headers.update({
-        'User-Agent': USER_AGENT,
-        'Referer': CLUB_URL,
-    })
-
-    # 1. GET la page de login pour obtenir les cookies initiaux
-    session.get(CLUB_URL, timeout=15)
-
-    # 2. POST les identifiants
-    password_md5 = hashlib.md5(PASSWORD.encode()).hexdigest()
-    resp = session.post(
-        CLUB_URL,
-        data={
-            'userid':   USERNAME,
-            'userkey':  PASSWORD,
-            'usermd5':  password_md5,
-        },
-        timeout=15,
-        allow_redirects=True,
-    )
-
-    print(f"  URL après login : {resp.url}")
-    print(f"  Statut HTTP     : {resp.status_code}")
-
-    # 3. Convertir les cookies pour Playwright
-    cookies = [
-        {
-            'name':   c.name,
-            'value':  c.value,
-            'domain': c.domain or 'www.premier-service.fr',
-            'path':   c.path or '/',
-        }
-        for c in session.cookies
-    ]
-    return cookies, resp.url
-
-
 # ── Réservation ───────────────────────────────────────────────────────────────
 
 def reserve_court(target_tuesday: datetime, rain_expected: bool) -> None:
     court_order = [1, 2, 3, 4] if rain_expected else [7, 8, 5, 6, 9]
     court_type  = "couvert" if rain_expected else "extérieur"
     print(f"  Type de terrain : {court_type} — ordre de préférence : {court_order}")
-
-    # ── 1. Login HTTP (sans navigateur) ───────────────────────────────────
-    print("  Login HTTP...")
-    cookies, planning_url = login_via_http()
-    print(f"  {len(cookies)} cookie(s) récupéré(s).")
 
     with sync_playwright() as p:
         browser = p.chromium.launch(
@@ -136,23 +89,55 @@ def reserve_court(target_tuesday: datetime, rain_expected: bool) -> None:
             viewport={"width": 1366, "height": 768},
             user_agent=USER_AGENT,
         )
-        stealth_sync(context.new_page())  # applique stealth sur une page temporaire
-        
-        # Injecter les cookies de session dans le contexte Playwright
-        if cookies:
-            context.add_cookies(cookies)
-
         page = context.new_page()
         stealth_sync(page)
 
-        # ── 2. Navigation directe vers le planning ─────────────────────────
-        # On va sur l'URL finale renvoyée par le login HTTP.
-        # Si c'est encore la page de login, on essaie CLUB_URL en fallback.
-        target_url = planning_url if planning_url != CLUB_URL else CLUB_URL
-        print(f"  Navigation vers : {target_url}")
-        page.goto(target_url, wait_until="load", timeout=30000)
+        # ── 1. Connexion ───────────────────────────────────────────────────
+        # Le site redirige CLUB_URL → ics.php via JavaScript.
+        # Le formulaire de login se trouve sur ics.php.
+        # Le bouton "Entrer" a un onClick qui calcule le MD5 avant soumission.
+        print("  Chargement de la page de connexion...")
+        page.goto(CLUB_URL, wait_until="load", timeout=30000)
 
-        # ── 3. Attente du planning ─────────────────────────────────────────
+        # Attendre la redirection vers ics.php
+        try:
+            page.wait_for_url("**/ics.php**", timeout=20000)
+            print(f"  Redirigé vers : {page.url}")
+        except PlaywrightTimeoutError:
+            print(f"  Pas de redirection automatique, URL : {page.url}")
+
+        # Attendre le formulaire de login
+        page.wait_for_selector('input[name="userid"]', state="attached", timeout=15000)
+        print("  Formulaire de login détecté.")
+
+        # Remplissage via clavier (les champs sont cachés ; la touche Tab
+        # déclenche le handler onkeypress qui bascule le focus sur userkey)
+        page.evaluate("document.querySelector('input[name=\"userid\"]').focus()")
+        page.keyboard.type(USERNAME)
+        page.keyboard.press("Tab")
+        time.sleep(0.5)
+        page.keyboard.type(PASSWORD)
+        time.sleep(0.5)
+
+        # Diagnostics avant soumission
+        form_info = page.evaluate("""() => {
+            const form = document.querySelector('form');
+            if (!form) return {error: 'pas de form'};
+            const fields = {};
+            form.querySelectorAll('input').forEach(i => {
+                fields[i.name || i.id || '?'] = i.value ? '(rempli)' : '(vide)';
+            });
+            return { action: form.action, method: form.method, fields: fields };
+        }""")
+        print(f"  Form → action={form_info.get('action')}, method={form_info.get('method')}")
+        print(f"  Champs : {form_info.get('fields')}")
+
+        # Cliquer le bouton "Entrer" via Playwright (force=True car élément caché).
+        # Cela déclenche le onClick qui calcule le MD5 avant de soumettre.
+        print("  Clic sur le bouton Entrer...")
+        page.locator('button.ui-button').click(force=True)
+
+        # ── 2. Attente du planning ─────────────────────────────────────────
         print("  Attente du planning (peut prendre 20-30s)...")
         planning_loaded = False
         for _ in range(90):
@@ -170,11 +155,17 @@ def reserve_court(target_tuesday: datetime, rain_expected: bool) -> None:
         if not planning_loaded:
             page.screenshot(path="apres_login.png")
             print(f"  URL au moment de l'erreur : {page.url}")
+            # Diagnostic supplémentaire : titre et contenu visible
+            try:
+                title = page.title()
+                print(f"  Titre de la page : {title}")
+            except Exception:
+                pass
             raise RuntimeError("Planning non chargé après 90s. Voir apres_login.png")
 
         print("  Connecté et planning chargé.")
 
-        # ── 4. Navigation vers le mardi cible ─────────────────────────────
+        # ── 3. Navigation vers le mardi cible ─────────────────────────────
         now_paris       = datetime.now(PARIS_TZ)
         days_to_advance = (target_tuesday.date() - now_paris.date()).days
         print(f"  Navigation : +{days_to_advance} jour(s) → {target_tuesday.strftime('%A %d/%m/%Y')}")
@@ -183,7 +174,7 @@ def reserve_court(target_tuesday: datetime, rain_expected: bool) -> None:
             page.locator('#btn_plus').click(force=True)
             time.sleep(2)
 
-        # ── 5. Sélection du créneau 20h00 ─────────────────────────────────
+        # ── 4. Sélection du créneau 20h00 ─────────────────────────────────
         booked = False
         for court_num in court_order:
             print(f"  Tentative terrain {court_num}...")
@@ -210,7 +201,7 @@ def reserve_court(target_tuesday: datetime, rain_expected: bool) -> None:
                 "Voir erreur_aucun_terrain.png pour diagnostic."
             )
 
-        # ── 6. Sélection du partenaire ─────────────────────────────────────
+        # ── 5. Sélection du partenaire ─────────────────────────────────────
         print(f"  Sélection du partenaire : {PARTNER}...")
 
         partner_input = page.locator(
@@ -233,7 +224,7 @@ def reserve_court(target_tuesday: datetime, rain_expected: bool) -> None:
                 label=PARTNER
             )
 
-        # ── 7. Validation ──────────────────────────────────────────────────
+        # ── 6. Validation ──────────────────────────────────────────────────
         page.locator(
             'button:has-text("Valider"), '
             'button:has-text("Confirmer"), '
