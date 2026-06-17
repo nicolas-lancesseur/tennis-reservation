@@ -104,11 +104,11 @@ def reserve_court(target_tuesday: datetime, rain_expected: bool) -> None:
         # ── 1. Connexion ───────────────────────────────────────────────────
         print("  Connexion au site...")
         page.goto(CLUB_URL)
-        # Stealth étant actif, les champs sont maintenant visibles : fill() simple suffit
-        page.wait_for_selector('input[name="userid"]', state="visible", timeout=15000)
-        page.fill('input[name="userid"]', USERNAME)
-        page.fill('input[name="userkey"]', PASSWORD)
-        page.click('button:has-text("Entrer")')
+        page.wait_for_selector('input[name="userid"]', state="attached", timeout=15000)
+        # Les champs sont dans le DOM mais hidden : force=True bypasse la visibilité
+        page.locator('input[name="userid"]').fill(USERNAME, force=True)
+        page.locator('input[name="userkey"]').fill(PASSWORD, force=True)
+        page.locator('button:has-text("Entrer")').click(force=True)
 
         # Le site affiche une page "Veuillez patienter..." avant de charger
         # le planning (double navigation + AJAX). On poll directement le DOM
