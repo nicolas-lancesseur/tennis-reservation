@@ -30,7 +30,7 @@ jobs:
  
       - name: Installation des dépendances
         run: |
-          pip install playwright requests
+          pip install playwright playwright-stealth requests
           playwright install chromium --with-deps
  
       - name: Réservation du terrain
