@@ -13,6 +13,7 @@ Logique :
 import os
 import sys
 import time
+import hashlib
 import requests
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
@@ -105,15 +106,24 @@ def reserve_court(target_tuesday: datetime, rain_expected: bool) -> None:
         print("  Connexion au site...")
         page.goto(CLUB_URL)
         page.wait_for_selector('input[name="userid"]', state="attached", timeout=15000)
-        # Focus sur userid via JS, puis Tab pour passer à userkey
-        # (le onkeypress du formulaire gère Tab/keyCode 9 → userkey.focus())
-        page.evaluate("document.querySelector('input[name=\"userid\"]').focus()")
-        page.keyboard.type(USERNAME)
-        page.keyboard.press("Tab")   # bascule sur userkey via le handler onkeypress
+
+        # Le site stocke le mot de passe sous forme de hash MD5 dans le champ usermd5.
+        # Ce hash est normalement calculé côté client lors de la saisie.
+        # En headless, les événements clavier sur les champs cachés ne déclenchent
+        # pas ce calcul → on l'injecte directement en Python.
+        password_md5 = hashlib.md5(PASSWORD.encode()).hexdigest()
+
+        # Injection directe des valeurs dans le formulaire via JS
+        page.evaluate(f"""
+            document.querySelector('input[name="userid"]').value = {repr(USERNAME)};
+            var userkey = document.querySelector('input[name="userkey"]');
+            if (userkey) userkey.value = {repr(PASSWORD)};
+            var usermd5 = document.querySelector('input[name="usermd5"]');
+            if (usermd5) usermd5.value = '{password_md5}';
+        """)
         time.sleep(0.3)
-        page.keyboard.type(PASSWORD)
-        time.sleep(0.3)
-        page.keyboard.press("Enter")  # soumet le formulaire de façon native
+        # Soumission native du formulaire
+        page.evaluate("document.querySelector('form').submit()")
 
         # Le site affiche une page "Veuillez patienter..." avant de charger
         # le planning (double navigation + AJAX). On poll directement le DOM
