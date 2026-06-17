@@ -105,13 +105,16 @@ def reserve_court(target_tuesday: datetime, rain_expected: bool) -> None:
         print("  Connexion au site...")
         page.goto(CLUB_URL)
         page.wait_for_selector('input[name="userid"]', state="attached", timeout=15000)
-        # Simuler de vraies frappes clavier pour déclencher les handlers onkeypress
-        # (notamment le calcul du hash MD5 côté client dans le champ usermd5 caché)
-        page.locator('input[name="userid"]').click(force=True)
+        # Les champs sont dans le DOM mais hidden : on les focus via JS
+        # puis on frappe les touches clavier pour déclencher les handlers onkeypress
+        page.evaluate("document.querySelector('input[name=\"userid\"]').focus()")
         page.keyboard.type(USERNAME)
-        page.locator('input[name="userkey"]').click(force=True)
+        time.sleep(0.3)
+        page.evaluate("document.querySelector('input[name=\"userkey\"]').focus()")
         page.keyboard.type(PASSWORD)
-        page.locator('button:has-text("Entrer")').click(force=True)
+        time.sleep(0.3)
+        # Soumettre le formulaire via le bouton (JS click pour bypasser la visibilité)
+        page.evaluate("document.querySelector('button.ui-button').click()")
 
         # Le site affiche une page "Veuillez patienter..." avant de charger
         # le planning (double navigation + AJAX). On poll directement le DOM
@@ -228,8 +231,8 @@ if __name__ == "__main__":
     # Garde-fou : s'exécuter uniquement le mercredi à Paris
     # (les deux crons UTC peuvent déclencher le workflow le mardi ou le mercredi)
     # if now_paris.weekday() != 2:
-    #    print(f"Ce n'est pas mercredi à Paris. Abandon.")
-    #    sys.exit(0)
+    #     print(f"Ce n'est pas mercredi à Paris. Abandon.")
+    #     sys.exit(0)
 
     target_tuesday = get_next_tuesday(now_paris)
     print(f"Cible : mardi {target_tuesday.strftime('%d/%m/%Y')} à 20h00\n")
