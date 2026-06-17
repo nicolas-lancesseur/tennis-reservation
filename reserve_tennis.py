@@ -109,20 +109,22 @@ def reserve_court(target_tuesday: datetime, rain_expected: bool) -> None:
         # Attendre que le JS de la page de login s'initialise complètement
         page.wait_for_selector('input[name="userid"]', state="attached", timeout=15000)
         time.sleep(2)
-        # Remplir via JavaScript pour déclencher tous les événements natifs
-        page.evaluate(f"""
-            () => {{
-                const u = document.querySelector('input[name="userid"]');
-                const p = document.querySelector('input[name="userkey"]');
+        # Remplir via JavaScript en passant les valeurs en argument
+        # (évite tout problème si le mot de passe contient des caractères spéciaux)
+        page.evaluate(
+            """([u, pw]) => {
+                const uf = document.querySelector('input[name="userid"]');
+                const pf = document.querySelector('input[name="userkey"]');
                 const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set;
-                setter.call(u, '{USERNAME}');
-                u.dispatchEvent(new Event('input', {{bubbles:true}}));
-                u.dispatchEvent(new Event('change', {{bubbles:true}}));
-                setter.call(p, '{PASSWORD}');
-                p.dispatchEvent(new Event('input', {{bubbles:true}}));
-                p.dispatchEvent(new Event('change', {{bubbles:true}}));
-            }}
-        """)
+                setter.call(uf, u);
+                uf.dispatchEvent(new Event('input', {bubbles:true}));
+                uf.dispatchEvent(new Event('change', {bubbles:true}));
+                setter.call(pf, pw);
+                pf.dispatchEvent(new Event('input', {bubbles:true}));
+                pf.dispatchEvent(new Event('change', {bubbles:true}));
+            }""",
+            [USERNAME, PASSWORD]
+        )
         time.sleep(1)
         page.click('button:has-text("Entrer")', force=True)
  
@@ -133,11 +135,12 @@ def reserve_court(target_tuesday: datetime, rain_expected: bool) -> None:
         planning_loaded = False
         for _ in range(90):  # jusqu'à 90 secondes
             try:
-                visible = page.evaluate(
-                    "() => { const el = document.getElementById('btn_plus'); "
-                    "return el !== null && el.offsetParent !== null; }"
+                # Vérifier l'existence dans le DOM (pas la visibilité)
+                # Le planning peut être dans le DOM mais invisible en headless
+                found = page.evaluate(
+                    "() => document.getElementById('btn_plus') !== null"
                 )
-                if visible:
+                if found:
                     planning_loaded = True
                     break
             except Exception:
@@ -156,21 +159,8 @@ def reserve_court(target_tuesday: datetime, rain_expected: bool) -> None:
         print(f"  Navigation : +{days_to_advance} jour(s) → {target_tuesday.strftime('%A %d/%m/%Y')}")
  
         for _ in range(days_to_advance):
-            # Bouton ">>" identifié par id="btn_plus" sur la plateforme Premier Service
-            page.click('#btn_plus')
-            # Attendre que le planning du jour suivant soit rechargé
-            time.sleep(2)
-            for _ in range(20):
-                try:
-                    visible = page.evaluate(
-                        "() => { const el = document.getElementById('btn_plus'); "
-                        "return el !== null && el.offsetParent !== null; }"
-                    )
-                    if visible:
-                        break
-                except Exception:
-                    pass
-                time.sleep(1)
+            page.locator('#btn_plus').click(force=True)
+            time.sleep(2)  # laisser l'AJAX recharger le planning du jour suivant
  
         # ── 3. Sélection du créneau 20h00 ─────────────────────────────────
         # Structure réelle du site Premier Service :
@@ -185,9 +175,9 @@ def reserve_court(target_tuesday: datetime, rain_expected: bool) -> None:
             if slot.count() > 0:
                 txt = slot.inner_text().strip()
                 if txt == "" or txt == "20h":
-                    # Case libre : on clique
-                    slot.click()
-                    page.wait_for_load_state("networkidle")
+                    # Case libre : on clique (force=True car éléments invisibles en headless)
+                    slot.click(force=True)
+                    time.sleep(2)
                     booked = True
                     print(f"  ✓ Terrain {court_num} (id={slot_id}) sélectionné.")
                     break
@@ -230,13 +220,13 @@ def reserve_court(target_tuesday: datetime, rain_expected: bool) -> None:
             )
  
         # ── 5. Validation ──────────────────────────────────────────────────
-        page.click(
+        page.locator(
             'button:has-text("Valider"), '
             'button:has-text("Confirmer"), '
             'button:has-text("Réserver"), '
             'input[type="submit"]'
-        )
-        page.wait_for_load_state("networkidle")
+        ).first.click(force=True)
+        time.sleep(3)
  
         page.screenshot(path="confirmation.png")
         print("  ✅ Réservation confirmée ! (voir confirmation.png)")
