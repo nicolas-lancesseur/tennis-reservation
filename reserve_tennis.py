@@ -113,7 +113,7 @@ def reserve_court(target_tuesday: datetime, rain_expected: bool) -> None:
         time.sleep(0.3)
         page.keyboard.type(PASSWORD)
         time.sleep(0.3)
-        page.evaluate("document.querySelector('button.ui-button').click()")
+        page.keyboard.press("Enter")  # soumet le formulaire de façon native
 
         # Le site affiche une page "Veuillez patienter..." avant de charger
         # le planning (double navigation + AJAX). On poll directement le DOM
