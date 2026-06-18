@@ -62,7 +62,7 @@ def reserve_court(target_tuesday, rain_expected):
             headless=False,
             args=['--disable-blink-features=AutomationControlled', '--no-sandbox', '--disable-setuid-sandbox']
         )
-        context = browser.new_context(viewport={"width": 1366, "height": 768}, user_agent=USER_AGENT)
+        context = browser.new_context(viewport={"width": 1366, "height": 768}, user_agent=USER_AGENT, service_workers="block")
         page = context.new_page()
         stealth_sync(page)
 
