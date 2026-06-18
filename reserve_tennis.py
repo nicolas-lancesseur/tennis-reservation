@@ -66,131 +66,99 @@ def reserve_court(target_tuesday, rain_expected):
         page = context.new_page()
         stealth_sync(page)
 
-        # Intercepter POST pour confirmer la soumission
-        def handle_route(route, request):
-            if request.method == 'POST':
-                print(f"  INTERCEPT POST: {request.url}")
-                try:
-                    print(f"  POST data: {request.post_data}")
-                except Exception as e:
-                    print(f"  (post_data err: {e})")
-            route.continue_()
-        page.route("**/*", handle_route)
-
         # 1. Chargement
         print("  Chargement de la page de connexion...")
         page.goto(CLUB_URL, wait_until="load", timeout=30000)
         try:
             page.wait_for_url("**/ics.php**", timeout=20000)
-            print(f"  Redirige vers : {page.url}")
         except PlaywrightTimeoutError:
-            print(f"  URL : {page.url}")
+            pass
         try:
             page.wait_for_load_state("load", timeout=15000)
         except PlaywrightTimeoutError:
             pass
         page.wait_for_selector('input[name="userid"]', state="attached", timeout=15000)
-        print("  Formulaire detecte.")
+        print(f"  Formulaire detecte sur {page.url}")
 
-        # 2. Login : remplir largeur/hauteur ecran + fsmd5 + clic
-        print("  Login avec screen dimensions + fsmd5 + click...")
-        diag = page.evaluate(f"""
-            (function() {{
+        # 2. Login via fetch() direct : fsmd5() fait le hash, FormData capture tout, fetch() soumet
+        print("  Login via fetch() direct (bypass fs())...")
+        login_result = page.evaluate(f"""
+            async () => {{
                 var f = document.querySelector('form');
-                var result = {{}};
 
-                // Remplir les dimensions ecran (check anti-bot probable)
-                var le = f.querySelector('[name="largeur_ecran"]');
-                var he = f.querySelector('[name="hauteur_ecran"]');
-                if (le) {{ le.value = '1366'; result.leSet = true; }}
-                if (he) {{ he.value = '768'; result.heSet = true; }}
-
-                // Override form.submit pour capturer l'appel
-                var origSubmit = HTMLFormElement.prototype.submit;
-                result.submitCalled = false;
-                HTMLFormElement.prototype.submit = function() {{
-                    result.submitCalled = true;
-                    var sf = {{}};
-                    var els = this.querySelectorAll('input');
-                    for (var i = 0; i < els.length; i++) {{
-                        sf[els[i].name] = els[i].value.substring(0, 40);
-                    }}
-                    result.submitFields = sf;
-                    origSubmit.call(this);
-                }};
-
-                // isTrusted spoof
-                Object.defineProperty(Event.prototype, 'isTrusted', {{
-                    get: function() {{ return true; }},
-                    configurable: true
-                }});
-
-                // Remplir username (champ non-honeypot)
-                var inputs = document.querySelectorAll('input[type="text"]');
+                // Remplir les champs visibles + dimensions ecran
+                var inputs = f.querySelectorAll('input[type="text"]');
+                var userFieldName = null;
                 for (var i = 0; i < inputs.length; i++) {{
                     if (inputs[i].name !== 'userid') {{
                         inputs[i].value = '{USERNAME}';
-                        result.userField = inputs[i].name;
+                        userFieldName = inputs[i].name;
                         break;
                     }}
                 }}
-
-                // Remplir password (champ non-honeypot)
-                var pinputs = document.querySelectorAll('input[type="password"]');
+                var pinputs = f.querySelectorAll('input[type="password"]');
+                var passFieldName = null;
                 for (var i = 0; i < pinputs.length; i++) {{
                     if (pinputs[i].name !== 'userkey') {{
                         pinputs[i].value = '{PASSWORD}';
-                        result.passField = pinputs[i].name;
+                        passFieldName = pinputs[i].name;
                         break;
                     }}
                 }}
+                var le = f.querySelector('[name="largeur_ecran"]');
+                var he = f.querySelector('[name="hauteur_ecran"]');
+                if (le) le.value = '1366';
+                if (he) he.value = '768';
 
-                // Appeler fsmd5() manuellement avant le clic
-                var usermd5Field = f.querySelector('[name="usermd5"]');
-                result.usermd5Before = usermd5Field ? usermd5Field.value : 'n/a';
-                try {{
-                    fsmd5();
-                    result.fsmd5Ok = true;
-                }} catch(e) {{
-                    result.fsmd5Err = e.message;
-                }}
-                result.usermd5After = usermd5Field ? usermd5Field.value.substring(0, 40) : 'n/a';
+                // Appeler fsmd5() pour hasher le mot de passe dans les bons champs
+                try {{ fsmd5(); }} catch(e) {{}}
 
-                // Lire le mot de passe apres fsmd5 (est-il transforme ?)
-                if (result.passField) {{
-                    var pf = f.querySelector('[name="' + result.passField + '"]');
-                    result.passAfter = pf ? pf.value.substring(0, 8) : 'n/a';
+                // Lire TOUS les champs apres fsmd5 via FormData
+                var fd = new FormData(f);
+                var allFields = {{}};
+                for (var [k, v] of fd.entries()) {{
+                    allFields[k] = v.toString().substring(0, 50);
                 }}
 
-                // Cliquer le bouton Entrer
-                var btns = document.querySelectorAll('button');
-                result.btnClicked = false;
-                for (var i = 0; i < btns.length; i++) {{
-                    if (btns[i].innerText && btns[i].innerText.indexOf('Entrer') >= 0) {{
-                        btns[i].click();
-                        result.btnClicked = true;
-                        break;
-                    }}
-                }}
+                // Soumettre directement via fetch()
+                var body = new URLSearchParams(fd).toString();
+                var url = window.location.href;
+                var resp = await fetch(url, {{
+                    method: 'POST',
+                    headers: {{'Content-Type': 'application/x-www-form-urlencoded'}},
+                    body: body,
+                    credentials: 'include'
+                }});
+                var text = await resp.text();
 
-                return JSON.stringify(result);
-            }})();
+                return JSON.stringify({{
+                    userField: userFieldName,
+                    passField: passFieldName,
+                    fields: allFields,
+                    httpStatus: resp.status,
+                    finalUrl: resp.url,
+                    hasPlanning: text.includes('btn_plus'),
+                    loginFail: text.includes('Votre identifiant') || text.includes('oubli'),
+                    respLen: text.length,
+                    respStart: text.substring(200, 500)
+                }});
+            }}
         """)
-        print(f"  DIAG: {diag}")
+        print(f"  LOGIN RESULT: {login_result}")
 
-        print("  Login soumis.")
-        time.sleep(2)
-        try:
-            page.wait_for_load_state("networkidle", timeout=20000)
-            print(f"  Post-login URL : {page.url}")
-        except PlaywrightTimeoutError:
-            print(f"  (networkidle timeout) URL : {page.url}")
+        import json as _json
+        lr = _json.loads(login_result)
+        if not lr.get('hasPlanning'):
+            # Le fetch a echoue, essayer de recharger la page (cookies mis a jour)
+            print("  fetch() n'a pas trouve btn_plus, rechargement...")
+            page.reload(wait_until="load", timeout=15000)
+            time.sleep(2)
 
         # 3. Attente du planning
         print("  Attente du planning...")
         planning_loaded = False
-        for i in range(90):
-            if i % 15 == 0:
+        for i in range(60):
+            if i % 10 == 0:
                 try:
                     print(f"  t+{i}s URL={page.url} title={page.title()}")
                 except Exception:
@@ -210,10 +178,10 @@ def reserve_court(target_tuesday, rain_expected):
             try:
                 print(f"  Titre : {page.title()}")
                 body_text = page.locator('body').inner_text(timeout=3000)
-                print(f"  Body (500 chars) : {repr(body_text[:500])}")
+                print(f"  Body (300 chars) : {repr(body_text[:300])}")
             except Exception as e:
                 print(f"  (impossible de lire body : {e})")
-            raise RuntimeError("Planning non charge apres 90s. Voir apres_login.png")
+            raise RuntimeError("Planning non charge. Voir apres_login.png")
 
         print("  Connecte et planning charge.")
 
