@@ -5,8 +5,8 @@ Tennis Club Issy-les-Moulineaux — plateforme Premier Service
 Logique :
   - Lance le mercredi à 00h01 heure de Paris
   - Réserve un terrain pour le mardi suivant à 20h00
-  - Si pluie prévue l'après-midi → terrain couvert (1-4)
-  - Si pas de pluie → terrain extérieur, préférence 7 ou 8
+  - Si pluie prévue l'après-midi -> terrain couvert (1-4)
+  - Si pas de pluie -> terrain extérieur, préférence 7 ou 8
   - Partenaire : Anthony Martin
 """
 
@@ -19,7 +19,7 @@ from zoneinfo import ZoneInfo
 from playwright.sync_api import sync_playwright, TimeoutError as PlaywrightTimeoutError
 from playwright_stealth import stealth_sync
 
-# ── Configuration ─────────────────────────────────────────────────────────────
+# Configuration
 CLUB_URL  = "https://www.premier-service.fr/_start/index.php?club=57920018"
 USERNAME  = os.environ["TENNIS_USERNAME"]
 PASSWORD  = os.environ["TENNIS_PASSWORD"]
@@ -36,8 +36,6 @@ USER_AGENT = (
     'Chrome/125.0.0.0 Safari/537.36'
 )
 
-
-# ── Utilitaires ───────────────────────────────────────────────────────────────
 
 def get_next_tuesday(from_date: datetime) -> datetime:
     days_ahead = (1 - from_date.weekday()) % 7
@@ -67,16 +65,14 @@ def check_rain_forecast(target_date: datetime) -> bool:
         if t in afternoon:
             max_prob = max(max_prob, p)
 
-    print(f"  Probabilité de pluie maximale (14h-20h) : {max_prob}%")
+    print(f"  Probabilite de pluie maximale (14h-20h) : {max_prob}%")
     return max_prob >= RAIN_THRESHOLD
 
 
-# ── Réservation ───────────────────────────────────────────────────────────────
-
 def reserve_court(target_tuesday: datetime, rain_expected: bool) -> None:
     court_order = [1, 2, 3, 4] if rain_expected else [7, 8, 5, 6, 9]
-    court_type  = "couvert" if rain_expected else "extérieur"
-    print(f"  Type de terrain : {court_type} — ordre de préférence : {court_order}")
+    court_type  = "couvert" if rain_expected else "exterieur"
+    print(f"  Type de terrain : {court_type} - ordre : {court_order}")
 
     with sync_playwright() as p:
         browser = p.chromium.launch(
@@ -94,24 +90,23 @@ def reserve_court(target_tuesday: datetime, rain_expected: bool) -> None:
         page = context.new_page()
         stealth_sync(page)
 
-        # ── 1. Connexion ───────────────────────────────────────────────────
+        # 1. Connexion
         print("  Chargement de la page de connexion...")
         page.goto(CLUB_URL, wait_until="load", timeout=30000)
 
         try:
             page.wait_for_url("**/ics.php**", timeout=20000)
-            print(f"  Redirigé vers : {page.url}")
+            print(f"  Redirige vers : {page.url}")
         except PlaywrightTimeoutError:
             print(f"  URL : {page.url}")
 
         page.wait_for_selector('input[name="userid"]', state="attached", timeout=15000)
-        print("  Formulaire détecté.")
+        print("  Formulaire detecte.")
 
-        # IMPORTANT : override window.fs() AVANT de remplir les champs.
-        # Certains handlers onchange appellent fs() dès que le password est rempli.
-        # Notre version supprime les vérifications anti-bot (isTrusted, etc.)
-        # et laisse fsmd5() calculer le hash MD5 normalement avant submit.
-        print("  Override window.fs() avant remplissage...")
+        # Override window.fs() AVANT de remplir les champs.
+        # Des handlers onchange peuvent appeler fs() des que le password est rempli.
+        # Notre version supprime les verifications anti-bot et laisse fsmd5() calculer le hash.
+        print("  Override window.fs()...")
         page.evaluate("""
             window.fs = function() {
                 var f = document.forms[0];
@@ -130,12 +125,7 @@ def reserve_court(target_tuesday: datetime, rain_expected: bool) -> None:
         real_pass = page.locator('input[type="password"]:not([name="userkey"])')
         real_pass.fill(PASSWORD)
 
-        time.sleep(0.3)
-
-        # Remplir aussi le leurre userkey par sécurité (fsmd5 peut le lire)
-        page.evaluate(f"document.querySelector('input[name="userkey"]').value = '{PASSWORD}'")
-
-        time.sleep(0.2)
+        time.sleep(0.5)
 
         # Clic JS direct sur le bouton "Entrer"
         page.evaluate("""
@@ -147,23 +137,20 @@ def reserve_court(target_tuesday: datetime, rain_expected: bool) -> None:
                 }
             }
         """)
-        print("  Bouton Entrer cliqué (fs() overridée, clic JS).")
+        print("  Bouton Entrer clique.")
 
-        # Laisser la navigation post-login se stabiliser
         try:
             page.wait_for_load_state("networkidle", timeout=15000)
-            print(f"  Navigation stable — URL : {page.url}")
+            print(f"  Navigation stable - URL : {page.url}")
         except PlaywrightTimeoutError:
             print(f"  (networkidle timeout) URL : {page.url}")
 
-        # ── 2. Attente du planning ─────────────────────────────────────────
+        # 2. Attente du planning
         print("  Attente du planning (peut prendre 20-30s)...")
         planning_loaded = False
         for _ in range(90):
             try:
-                found = page.evaluate(
-                    "() => document.getElementById('btn_plus') !== null"
-                )
+                found = page.evaluate("() => document.getElementById('btn_plus') !== null")
                 if found:
                     planning_loaded = True
                     break
@@ -173,18 +160,18 @@ def reserve_court(target_tuesday: datetime, rain_expected: bool) -> None:
 
         if not planning_loaded:
             page.screenshot(path="apres_login.png")
-            print(f"  URL au moment de l'erreur : {page.url}")
+            print(f"  URL erreur : {page.url}")
             try:
                 print(f"  Titre : {page.title()}")
                 body_text = page.locator('body').inner_text(timeout=3000)
-                print(f"  Contenu page (500 chars) : {repr(body_text[:500])}")
+                print(f"  Body (500 chars) : {repr(body_text[:500])}")
             except Exception as e:
                 print(f"  (impossible de lire body : {e})")
-            raise RuntimeError("Planning non chargé après 90s. Voir apres_login.png")
+            raise RuntimeError("Planning non charge apres 90s. Voir apres_login.png")
 
-        print("  Connecté et planning chargé.")
+        print("  Connecte et planning charge.")
 
-        # ── 3. Navigation vers le mardi cible ─────────────────────────────
+        # 3. Navigation vers le mardi cible
         now_paris       = datetime.now(PARIS_TZ)
         days_to_advance = (target_tuesday.date() - now_paris.date()).days
         print(f"  Navigation : +{days_to_advance} jour(s) vers {target_tuesday.strftime('%A %d/%m/%Y')}")
@@ -193,7 +180,7 @@ def reserve_court(target_tuesday: datetime, rain_expected: bool) -> None:
             page.locator('#btn_plus').click(force=True)
             time.sleep(2)
 
-        # ── 4. Sélection du créneau 20h00 ─────────────────────────────────
+        # 4. Selection du creneau 20h00
         booked = False
         for court_num in court_order:
             print(f"  Tentative terrain {court_num}...")
@@ -201,31 +188,28 @@ def reserve_court(target_tuesday: datetime, rain_expected: bool) -> None:
             slot = page.locator(f'[id="{slot_id}"]')
 
             if slot.count() == 0:
-                print(f"  → id={slot_id} introuvable.")
+                print(f"  -> id={slot_id} introuvable.")
                 continue
 
             txt = slot.inner_text().strip()
             if txt not in ("", "20h"):
-                print(f"  → Terrain {court_num} déjà réservé ({txt[:40]}), on passe.")
+                print(f"  -> Terrain {court_num} deja reserve ({txt[:40]}), on passe.")
                 continue
 
-            print(f"  → Terrain {court_num} disponible, clic...")
+            print(f"  -> Terrain {court_num} disponible, clic...")
             slot.click(force=True)
             time.sleep(1)
             page.screenshot(path="apres_clic_terrain.png")
             booked = True
-            print(f"  Terrain {court_num} (id={slot_id}) cliqué.")
+            print(f"  Terrain {court_num} clique.")
             break
 
         if not booked:
             page.screenshot(path="erreur_aucun_terrain.png")
-            raise RuntimeError(
-                "Aucun terrain disponible pour 20h. "
-                "Voir erreur_aucun_terrain.png pour diagnostic."
-            )
+            raise RuntimeError("Aucun terrain disponible pour 20h.")
 
-        # ── 5. Formulaire de réservation ───────────────────────────────────
-        print("  Attente du formulaire de réservation...")
+        # 5. Formulaire de reservation
+        print("  Attente du formulaire...")
         confirm_btn = None
 
         for i in range(10):
@@ -235,16 +219,16 @@ def reserve_court(target_tuesday: datetime, rain_expected: bool) -> None:
                 'button:has-text("Oui, je reserve"), '
                 'button:has-text("Valider"), '
                 'button:has-text("Confirmer"), '
-                'button:has-text("Réserver")'
+                'button:has-text("Reserver")'
             )
             if btn.count() > 0 and btn.first.is_visible():
                 confirm_btn = btn.first
-                print(f"  → Bouton de confirmation trouvé à t+{i+1}s.")
+                print(f"  -> Bouton confirmation trouve a t+{i+1}s.")
                 break
 
         page.screenshot(path="formulaire_resa.png")
 
-        # ── 5b. Saisie du partenaire ───────────────────────────────────────
+        # 5b. Saisie du partenaire
         print("  Recherche du champ partenaire...")
         partner_fields = page.locator(
             'input[placeholder*="artenaire"], '
@@ -263,7 +247,7 @@ def reserve_court(target_tuesday: datetime, rain_expected: bool) -> None:
         if hasattr(partner_fields, 'count') and partner_fields.count() > 0:
             pf = partner_fields.first if hasattr(partner_fields, 'first') else partner_fields
             if pf.is_visible():
-                print(f"  → Saisie partenaire : {PARTNER}")
+                print(f"  -> Saisie partenaire : {PARTNER}")
                 pf.fill(PARTNER)
                 time.sleep(1)
                 try:
@@ -274,17 +258,15 @@ def reserve_court(target_tuesday: datetime, rain_expected: bool) -> None:
                     ).first
                     if suggestion.is_visible():
                         suggestion.click(force=True)
-                        print("  → Partenaire sélectionné via autocomplétion.")
+                        print("  -> Partenaire selectionne via autocompletion.")
                 except Exception:
-                    print("  (pas d'autocomplétion)")
-            else:
-                print("  (champ partenaire non visible)")
+                    print("  (pas d'autocompletion)")
         else:
-            print("  (aucun champ partenaire détecté)")
+            print("  (aucun champ partenaire detecte)")
 
-        # ── 6. Confirmation ────────────────────────────────────────────────
+        # 6. Confirmation
         if confirm_btn:
-            print("  Clic sur le bouton de confirmation...")
+            print("  Clic confirmation...")
             confirm_btn.click(force=True)
             time.sleep(3)
         else:
@@ -292,35 +274,33 @@ def reserve_court(target_tuesday: datetime, rain_expected: bool) -> None:
                 'button:has-text("Oui"), '
                 'button:has-text("Valider"), '
                 'button:has-text("Confirmer"), '
-                'button:has-text("Réserver")'
+                'button:has-text("Reserver")'
             )
             if fallback.count() > 0 and fallback.first.is_visible():
                 fallback.first.click(force=True)
                 time.sleep(3)
             else:
-                print("  Aucun bouton de confirmation — le clic terrain a peut-être suffi.")
+                print("  Aucun bouton confirmation - le clic terrain a peut-etre suffi.")
 
         page.screenshot(path="confirmation.png")
-        print("  Réservation terminée (voir confirmation.png)")
+        print("  Reservation terminee. Voir confirmation.png")
         browser.close()
 
 
-# ── Point d'entrée ─────────────────────────────────────────────────────────────
-
 if __name__ == "__main__":
     now_paris = datetime.now(PARIS_TZ)
-    print(f"\n=== Réservation Tennis ===")
+    print(f"\n=== Reservation Tennis ===")
     print(f"Heure Paris : {now_paris.strftime('%A %d/%m/%Y %H:%M')}")
 
     # if now_paris.weekday() != 2:
-    #     print(f"Ce n'est pas mercredi à Paris. Abandon.")
+    #     print("Ce n'est pas mercredi a Paris. Abandon.")
     #     sys.exit(0)
 
     target_tuesday = get_next_tuesday(now_paris)
-    print(f"Cible : mardi {target_tuesday.strftime('%d/%m/%Y')} à 20h00\n")
+    print(f"Cible : mardi {target_tuesday.strftime('%d/%m/%Y')} a 20h00\n")
 
-    print("Vérification météo (Open-Meteo)...")
+    print("Verification meteo (Open-Meteo)...")
     rain = check_rain_forecast(target_tuesday)
-    print(f"  → {'Pluie prévue : terrain couvert' if rain else 'Pas de pluie : terrain extérieur'}\n")
+    print(f"  -> {'Pluie prevue : terrain couvert' if rain else 'Pas de pluie : terrain exterieur'}\n")
 
     reserve_court(target_tuesday, rain)
