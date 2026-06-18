@@ -111,48 +111,36 @@ def reserve_court(target_tuesday: datetime, rain_expected: bool) -> None:
         page.wait_for_selector('input[name="userid"]', state="attached", timeout=15000)
         print("  Formulaire detecte.")
 
-        # Override window.fs() AVANT de remplir les champs.
-        # Des handlers onchange peuvent appeler fs() des que le password est rempli.
-        # Notre version supprime les verifications anti-bot et laisse fsmd5() calculer le hash.
-        print("  Override window.fs()...")
+        # Tout en un seul evaluate() atomique : override fs + fill + click.
+        # Plusieurs evaluate() separees echouent car ics.php fait une navigation JS interne
+        # qui detruit le contexte entre les appels.
+        print("  Login atomique (override fs + fill + click)...")
         page.evaluate("""
-            window.fs = function() {
-                var f = document.forms[0];
-                if (!f) return;
-                if (typeof fsmd5 === 'function') { try { fsmd5(); } catch(e) {} }
-                f.submit();
-            };
-        """)
-
-        print("  Remplissage des champs (via JS pour eviter le blocage navigation)...")
-        # page.fill() bloque sur ics.php car Playwright detecte une navigation JS interne persistante.
-        # On pose les valeurs directement via evaluate() qui ne verifie pas l'etat de navigation.
-        page.evaluate("""
-            (function() {
+            (function(u, p) {
+                window.fs = function() {
+                    var f = document.forms[0];
+                    if (!f) return;
+                    if (typeof fsmd5 === 'function') { try { fsmd5(); } catch(e) {} }
+                    f.submit();
+                };
                 var inputs = document.querySelectorAll('input[type="text"]');
                 for (var i = 0; i < inputs.length; i++) {
-                    if (inputs[i].name !== 'userid') { inputs[i].value = arguments[0]; break; }
+                    if (inputs[i].name !== 'userid') { inputs[i].value = u; break; }
                 }
                 var pinputs = document.querySelectorAll('input[type="password"]');
                 for (var i = 0; i < pinputs.length; i++) {
-                    if (pinputs[i].name !== 'userkey') { pinputs[i].value = arguments[1]; break; }
+                    if (pinputs[i].name !== 'userkey') { pinputs[i].value = p; break; }
                 }
-            })(...arguments)
+                var btns = document.querySelectorAll('button');
+                for (var i = 0; i < btns.length; i++) {
+                    if (btns[i].innerText && btns[i].innerText.indexOf('Entrer') >= 0) {
+                        btns[i].click();
+                        break;
+                    }
+                }
+            })(arguments[0], arguments[1]);
         """, [USERNAME, PASSWORD])
-
-        time.sleep(0.5)
-
-        # Clic JS direct sur le bouton "Entrer"
-        page.evaluate("""
-            var btns = document.querySelectorAll('button');
-            for (var i = 0; i < btns.length; i++) {
-                if (btns[i].innerText && btns[i].innerText.indexOf('Entrer') >= 0) {
-                    btns[i].click();
-                    break;
-                }
-            }
-        """)
-        print("  Bouton Entrer clique.")
+        print("  Login soumis.")
 
         try:
             page.wait_for_load_state("networkidle", timeout=15000)
