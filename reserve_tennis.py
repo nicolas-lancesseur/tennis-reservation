@@ -66,7 +66,7 @@ def reserve_court(target_tuesday, rain_expected):
         page = context.new_page()
         stealth_sync(page)
 
-        # Intercepter TOUTES les requetes pour diagnostiquer
+        # Intercepter POST pour confirmer la soumission
         def handle_route(route, request):
             if request.method == 'POST':
                 print(f"  INTERCEPT POST: {request.url}")
@@ -92,38 +92,28 @@ def reserve_court(target_tuesday, rain_expected):
         page.wait_for_selector('input[name="userid"]', state="attached", timeout=15000)
         print("  Formulaire detecte.")
 
-        # 2. Diagnostic approfondi du formulaire + soumission
-        print("  Diagnostic formulaire + login...")
+        # 2. Login : remplir largeur/hauteur ecran + fsmd5 + clic
+        print("  Login avec screen dimensions + fsmd5 + click...")
         diag = page.evaluate(f"""
             (function() {{
+                var f = document.querySelector('form');
                 var result = {{}};
 
-                // Lister tous les champs du formulaire
-                var f = document.querySelector('form');
-                result.formFound = !!f;
-                result.fields = [];
-                if (f) {{
-                    var els = f.querySelectorAll('input, select, textarea');
-                    for (var i = 0; i < els.length; i++) {{
-                        result.fields.push({{
-                            name: els[i].name,
-                            type: els[i].type,
-                            valLen: els[i].value.length,
-                            display: getComputedStyle(els[i]).display
-                        }});
-                    }}
-                }}
+                // Remplir les dimensions ecran (check anti-bot probable)
+                var le = f.querySelector('[name="largeur_ecran"]');
+                var he = f.querySelector('[name="hauteur_ecran"]');
+                if (le) {{ le.value = '1366'; result.leSet = true; }}
+                if (he) {{ he.value = '768'; result.heSet = true; }}
 
-                // Intercepter form.submit
-                result.submitCalled = false;
-                result.submitFields = null;
+                // Override form.submit pour capturer l'appel
                 var origSubmit = HTMLFormElement.prototype.submit;
+                result.submitCalled = false;
                 HTMLFormElement.prototype.submit = function() {{
                     result.submitCalled = true;
                     var sf = {{}};
-                    var els2 = this.querySelectorAll('input, select, textarea');
-                    for (var i = 0; i < els2.length; i++) {{
-                        sf[els2[i].name + '|' + els2[i].type] = els2[i].value.substring(0, 40);
+                    var els = this.querySelectorAll('input');
+                    for (var i = 0; i < els.length; i++) {{
+                        sf[els[i].name] = els[i].value.substring(0, 40);
                     }}
                     result.submitFields = sf;
                     origSubmit.call(this);
@@ -135,45 +125,52 @@ def reserve_court(target_tuesday, rain_expected):
                     configurable: true
                 }});
 
-                // Remplir username
+                // Remplir username (champ non-honeypot)
                 var inputs = document.querySelectorAll('input[type="text"]');
-                result.userFieldName = null;
                 for (var i = 0; i < inputs.length; i++) {{
                     if (inputs[i].name !== 'userid') {{
                         inputs[i].value = '{USERNAME}';
-                        result.userFieldName = inputs[i].name;
+                        result.userField = inputs[i].name;
                         break;
                     }}
                 }}
 
-                // Remplir password
+                // Remplir password (champ non-honeypot)
                 var pinputs = document.querySelectorAll('input[type="password"]');
-                result.passFieldName = null;
                 for (var i = 0; i < pinputs.length; i++) {{
                     if (pinputs[i].name !== 'userkey') {{
                         pinputs[i].value = '{PASSWORD}';
-                        result.passFieldName = pinputs[i].name;
+                        result.passField = pinputs[i].name;
                         break;
                     }}
                 }}
 
-                // Cliquer bouton Entrer
+                // Appeler fsmd5() manuellement avant le clic
+                var usermd5Field = f.querySelector('[name="usermd5"]');
+                result.usermd5Before = usermd5Field ? usermd5Field.value : 'n/a';
+                try {{
+                    fsmd5();
+                    result.fsmd5Ok = true;
+                }} catch(e) {{
+                    result.fsmd5Err = e.message;
+                }}
+                result.usermd5After = usermd5Field ? usermd5Field.value.substring(0, 40) : 'n/a';
+
+                // Lire le mot de passe apres fsmd5 (est-il transforme ?)
+                if (result.passField) {{
+                    var pf = f.querySelector('[name="' + result.passField + '"]');
+                    result.passAfter = pf ? pf.value.substring(0, 8) : 'n/a';
+                }}
+
+                // Cliquer le bouton Entrer
                 var btns = document.querySelectorAll('button');
-                result.btnFound = false;
-                result.btnText = null;
+                result.btnClicked = false;
                 for (var i = 0; i < btns.length; i++) {{
                     if (btns[i].innerText && btns[i].innerText.indexOf('Entrer') >= 0) {{
-                        result.btnFound = true;
-                        result.btnText = btns[i].innerText.trim();
                         btns[i].click();
+                        result.btnClicked = true;
                         break;
                     }}
-                }}
-
-                // Lire le champ password apres fsmd5 (s'il a ete transforme)
-                if (result.passFieldName) {{
-                    var pf = f ? f.querySelector('input[name="' + result.passFieldName + '"]') : null;
-                    result.passValAfterClick = pf ? pf.value.substring(0, 40) : 'not found';
                 }}
 
                 return JSON.stringify(result);
