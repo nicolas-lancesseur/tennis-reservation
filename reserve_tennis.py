@@ -80,8 +80,12 @@ def reserve_court(target_tuesday: datetime, rain_expected: bool) -> None:
 
     with sync_playwright() as p:
         browser = p.chromium.launch(
-            headless=True,
-            args=['--disable-blink-features=AutomationControlled']
+            headless=False,  # navigateur visible via Xvfb (contourne la détection headless)
+            args=[
+                '--disable-blink-features=AutomationControlled',
+                '--no-sandbox',
+                '--disable-setuid-sandbox',
+            ]
         )
         context = browser.new_context(
             viewport={"width": 1366, "height": 768},
@@ -124,15 +128,20 @@ def reserve_court(target_tuesday: datetime, rain_expected: bool) -> None:
 
         time.sleep(0.5)
 
-        # Appeler fsmd5() pour calculer le MD5 depuis le vrai champ rempli,
-        # puis soumettre via form.submit() en contournant fs() qui contient
-        # des vérifications anti-bot bloquant la soumission en headless.
-        page.evaluate("""
-            document.forms[0].idact.value = '101';
-            if (typeof fsmd5 === 'function') fsmd5();
-            document.forms[0].submit();
-        """)
-        print("  Formulaire soumis.")
+        # Mesure défensive : renseigner aussi "userkey" (leurre) via JS.
+        # La source exacte lue par fsmd5() (vrai champ ou leurre) est inconnue ;
+        # remplir les deux garantit que fsmd5() dispose du mot de passe.
+        page.evaluate(f"document.querySelector('input[name=\"userkey\"]').value = '{PASSWORD}'")
+
+        time.sleep(0.3)
+
+        # Avec headless=False, on peut cliquer le bouton "Entrer" normalement.
+        # Cela déclenche onclick → fsmd5() + fs() → le formulaire est soumis
+        # avec tous les champs de fingerprinting (hauteur_ecran, pingmax, etc.)
+        # que le serveur attend. Bypasser fs() via form.submit() omettrait ces
+        # champs et pourrait faire échouer l'authentification côté serveur.
+        page.locator('button:has-text("Entrer")').first.click(force=True)
+        print("  Bouton Entrer cliqué.")
 
         # ── 2. Attente du planning ─────────────────────────────────────────
         print("  Attente du planning (peut prendre 20-30s)...")
@@ -169,69 +178,138 @@ def reserve_court(target_tuesday: datetime, rain_expected: bool) -> None:
             page.locator('#btn_plus').click(force=True)
             time.sleep(2)
 
-        # ── 4. Sélection du créneau 20h00 ─────────────────────────────────
-        # Chaque créneau est un <p id="{HH}_{MM}_{terrain_num}">
-        # Ex : id="20_0_7" = 20h00 sur TCIM-7
+        # ── 4. Sélection du créneau 20h00 ─────────────────────────────────────
+        # Les créneaux libres ont le texte "20h" (ou vide).
+        # Le clic via Playwright (isTrusted=true) déclenche les handlers jQuery
+        # au niveau document, ce qui ouvre le formulaire de réservation.
         booked = False
         for court_num in court_order:
             print(f"  Tentative terrain {court_num}...")
             slot_id = f"20_0_{court_num}"
             slot = page.locator(f'[id="{slot_id}"]')
 
-            if slot.count() > 0:
-                txt = slot.inner_text().strip()
-                if txt == "" or txt == "20h":
-                    slot.click(force=True)
-                    time.sleep(2)
-                    booked = True
-                    print(f"  ✓ Terrain {court_num} (id={slot_id}) sélectionné.")
-                    break
-                else:
-                    print(f"  → Terrain {court_num} déjà réservé ({txt[:40]}), on passe.")
-            else:
+            if slot.count() == 0:
                 print(f"  → id={slot_id} introuvable sur la page.")
+                continue
+
+            txt = slot.inner_text().strip()
+            if txt not in ("", "20h"):
+                print(f"  → Terrain {court_num} déjà réservé ({txt[:40]}), on passe.")
+                continue
+
+            print(f"  → Terrain {court_num} disponible, clic...")
+            slot.click(force=True)
+            time.sleep(1)
+            page.screenshot(path="apres_clic_terrain.png")
+            booked = True
+            print(f"  ✓ Terrain {court_num} (id={slot_id}) cliqué.")
+            break
 
         if not booked:
             page.screenshot(path="erreur_aucun_terrain.png")
             raise RuntimeError(
-                "Aucun terrain disponible trouvé pour 20h. "
+                "Aucun terrain disponible pour 20h. "
                 "Voir erreur_aucun_terrain.png pour diagnostic."
             )
 
-        # ── 5. Sélection du partenaire ─────────────────────────────────────
-        print(f"  Sélection du partenaire : {PARTNER}...")
+        # ── 5. Attente et gestion du formulaire post-clic ─────────────────────
+        # Après un clic trusté, le site peut :
+        #   a) Afficher un formulaire inline dans bloc_reservation
+        #   b) Ouvrir un modal jqmWindow (ex: modal_inscription)
+        #   c) Recharger la page avec un formulaire de confirmation
+        # On attend jusqu'à 10s en cherchant tout bouton de confirmation.
+        print("  Attente du formulaire de réservation...")
+        confirm_btn = None
+        partner_input_found = None
 
-        partner_input = page.locator(
-            'input[name*="partenaire"], '
-            'input[name*="partner"], '
-            'input[placeholder*="artenaire"], '
-            'input[placeholder*="artner"]'
-        ).first
+        for i in range(10):
+            time.sleep(1)
 
-        if partner_input.count() > 0:
-            partner_input.fill(PARTNER)
-            try:
-                page.wait_for_selector(f'text="{PARTNER}"', timeout=5000)
-                page.click(f'text="{PARTNER}"')
-            except PlaywrightTimeoutError:
-                print("  (pas d'autocomplétion détectée, texte saisi directement)")
-        else:
-            page.select_option(
-                'select[name*="partenaire"], select[name*="partner"]',
-                label=PARTNER
+            # Chercher un bouton de confirmation dans les modals ou la page
+            btn = page.locator(
+                '#modal_inscription button:has-text("Oui"), '
+                'button:has-text("Oui, je reserve"), '
+                'button:has-text("Valider"), '
+                'button:has-text("Confirmer"), '
+                'button:has-text("Réserver")'
             )
+            if btn.count() > 0 and btn.first.is_visible():
+                confirm_btn = btn.first
+                print(f"  → Bouton de confirmation trouvé à t+{i+1}s.")
+                break
 
-        # ── 6. Validation ──────────────────────────────────────────────────
-        page.locator(
-            'button:has-text("Valider"), '
-            'button:has-text("Confirmer"), '
-            'button:has-text("Réserver"), '
-            'input[type="submit"]'
-        ).first.click(force=True)
-        time.sleep(3)
+            # Détecter si un champ partenaire est visible (pour logging)
+            partner_check = page.locator('input[placeholder*="artenaire"], input[name*="artenaire"]')
+            if partner_check.count() > 0 and partner_check.first.is_visible():
+                partner_input_found = True
+
+        page.screenshot(path="formulaire_resa.png")
+        print(f"  Screenshot formulaire : formulaire_resa.png")
+
+        # ── 5b. Saisie du partenaire (si un champ est visible) ────────────────
+        print(f"  Recherche du champ partenaire...")
+        # Cherche les champs partenaire par attributs reconnaissables
+        partner_fields = page.locator(
+            'input[placeholder*="artenaire"], '
+            'input[placeholder*="artner"], '
+            'input[name*="artenaire"], '
+            'input[name*="artner"]'
+        )
+        # Fallback : tout input texte visible sauf le sélecteur de date
+        if partner_fields.count() == 0:
+            all_text_inputs = page.locator('input[type="text"]')
+            for idx in range(all_text_inputs.count()):
+                inp = all_text_inputs.nth(idx)
+                if inp.is_visible() and inp.get_attribute("id") != "CHAMP_SELECTEUR_JOUR":
+                    partner_fields = inp
+                    break
+
+        if hasattr(partner_fields, 'count') and partner_fields.count() > 0:
+            pf = partner_fields.first if hasattr(partner_fields, 'first') else partner_fields
+            if pf.is_visible():
+                print(f"  → Champ partenaire trouvé, saisie : {PARTNER}")
+                pf.fill(PARTNER)
+                time.sleep(1)
+                # Essayer l'autocomplétion
+                try:
+                    suggestion = page.locator(
+                        f'li:has-text("{PARTNER}"), '
+                        f'[class*="autocomplete"] :has-text("{PARTNER}"), '
+                        f'[class*="suggest"] :has-text("{PARTNER}")'
+                    ).first
+                    if suggestion.is_visible():
+                        suggestion.click(force=True)
+                        print("  → Partenaire sélectionné via autocomplétion.")
+                except Exception:
+                    print("  (pas d'autocomplétion, texte saisi directement)")
+            else:
+                print("  (champ partenaire non visible)")
+        else:
+            print("  (aucun champ partenaire détecté — la réservation peut ne pas en demander)")
+
+        # ── 6. Clic sur le bouton de confirmation ────────────────────────────
+        if confirm_btn:
+            print(f"  Clic sur le bouton de confirmation...")
+            confirm_btn.click(force=True)
+            time.sleep(3)
+        else:
+            # Dernière tentative : chercher n'importe quel bouton de confirmation
+            fallback = page.locator(
+                'button:has-text("Oui"), '
+                'button:has-text("Valider"), '
+                'button:has-text("Confirmer"), '
+                'button:has-text("Réserver"), '
+                'button:has-text("reserve")'
+            )
+            if fallback.count() > 0 and fallback.first.is_visible():
+                print("  Fallback : bouton de confirmation trouvé.")
+                fallback.first.click(force=True)
+                time.sleep(3)
+            else:
+                print("  ⚠️  Aucun bouton de confirmation trouvé — le clic sur le terrain a peut-être suffi.")
 
         page.screenshot(path="confirmation.png")
-        print("  ✅ Réservation confirmée ! (voir confirmation.png)")
+        print("  ✅ Réservation terminée (voir confirmation.png)")
         browser.close()
 
 
