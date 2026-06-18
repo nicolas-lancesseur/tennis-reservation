@@ -124,14 +124,21 @@ def reserve_court(target_tuesday: datetime, rain_expected: bool) -> None:
             };
         """)
 
-        print("  Remplissage des champs...")
-        # Vrai champ texte (pas le leurre 'userid')
-        real_user = page.locator('input[type="text"]:not([name="userid"])')
-        real_user.fill(USERNAME)
-
-        # Vrai champ password (pas le leurre 'userkey')
-        real_pass = page.locator('input[type="password"]:not([name="userkey"])')
-        real_pass.fill(PASSWORD)
+        print("  Remplissage des champs (via JS pour eviter le blocage navigation)...")
+        # page.fill() bloque sur ics.php car Playwright detecte une navigation JS interne persistante.
+        # On pose les valeurs directement via evaluate() qui ne verifie pas l'etat de navigation.
+        page.evaluate("""
+            (function() {
+                var inputs = document.querySelectorAll('input[type="text"]');
+                for (var i = 0; i < inputs.length; i++) {
+                    if (inputs[i].name !== 'userid') { inputs[i].value = arguments[0]; break; }
+                }
+                var pinputs = document.querySelectorAll('input[type="password"]');
+                for (var i = 0; i < pinputs.length; i++) {
+                    if (pinputs[i].name !== 'userkey') { pinputs[i].value = arguments[1]; break; }
+                }
+            })(...arguments)
+        """, [USERNAME, PASSWORD])
 
         time.sleep(0.5)
 
