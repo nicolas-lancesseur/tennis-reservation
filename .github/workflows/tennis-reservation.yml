@@ -1,5 +1,5 @@
 name: Réservation Tennis Hebdomadaire
- 
+
 on:
   schedule:
     # Mercredi 00h01 heure de Paris :
@@ -10,35 +10,43 @@ on:
     # Note : le script vérifie lui-même si c'est mercredi à Paris
     # et s'arrête automatiquement si ce n'est pas le cas
     # (évite toute double exécution)
- 
+
   # Déclenchement manuel pour tester sans attendre le mercredi
   workflow_dispatch:
- 
+
 jobs:
   reserver-terrain:
     runs-on: ubuntu-latest
     timeout-minutes: 15
- 
+
     steps:
       - name: Checkout du dépôt
         uses: actions/checkout@v4
- 
+
       - name: Setup Python 3.11
         uses: actions/setup-python@v5
         with:
           python-version: '3.11'
- 
+
       - name: Installation des dépendances
         run: |
           pip install playwright "playwright-stealth==1.0.6" requests
           playwright install chromium --with-deps
- 
+
+      - name: Démarrage de l'écran virtuel (Xvfb)
+        run: |
+          sudo apt-get install -y xvfb
+          Xvfb :99 -screen 0 1366x768x24 &
+          echo "DISPLAY=:99" >> $GITHUB_ENV
+          sleep 2
+
       - name: Réservation du terrain
         env:
           TENNIS_USERNAME: ${{ secrets.TENNIS_USERNAME }}
           TENNIS_PASSWORD: ${{ secrets.TENNIS_PASSWORD }}
+          DISPLAY: :99
         run: python reserve_tennis.py
- 
+
       - name: Sauvegarde du screenshot de confirmation
         if: always()
         uses: actions/upload-artifact@v4
@@ -48,4 +56,6 @@ jobs:
             confirmation.png
             erreur_aucun_terrain.png
             apres_login.png
+            apres_clic_terrain.png
+            formulaire_resa.png
           if-no-files-found: ignore
