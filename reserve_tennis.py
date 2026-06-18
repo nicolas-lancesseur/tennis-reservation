@@ -135,13 +135,15 @@ def reserve_court(target_tuesday: datetime, rain_expected: bool) -> None:
 
         time.sleep(0.3)
 
-        # Avec headless=False, on peut cliquer le bouton "Entrer" normalement.
-        # Cela déclenche onclick → fsmd5() + fs() → le formulaire est soumis
-        # avec tous les champs de fingerprinting (hauteur_ecran, pingmax, etc.)
-        # que le serveur attend. Bypasser fs() via form.submit() omettrait ces
-        # champs et pourrait faire échouer l'authentification côté serveur.
-        page.locator('button:has-text("Entrer")').first.click(force=True)
-        print("  Bouton Entrer cliqué.")
+        # fs() contient des vérifications anti-bot qui bloquent la soumission
+        # même avec headless=False. On contourne via form.submit() après fsmd5().
+        # headless=False garantit que le planning AJAX chargera après la connexion.
+        page.evaluate("""
+            document.forms[0].idact.value = '101';
+            if (typeof fsmd5 === 'function') fsmd5();
+            document.forms[0].submit();
+        """)
+        print("  Formulaire soumis.")
 
         # ── 2. Attente du planning ─────────────────────────────────────────
         print("  Attente du planning (peut prendre 20-30s)...")
