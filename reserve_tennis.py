@@ -67,7 +67,7 @@ def check_rain_forecast(target_date: datetime) -> bool:
         if t in afternoon:
             max_prob = max(max_prob, p)
 
-    print(f"  Probabilité de pluie maximale (14h–20h) : {max_prob}%")
+    print(f"  Probabilité de pluie maximale (14h-20h) : {max_prob}%")
     return max_prob >= RAIN_THRESHOLD
 
 
@@ -95,9 +95,6 @@ def reserve_court(target_tuesday: datetime, rain_expected: bool) -> None:
         stealth_sync(page)
 
         # ── 1. Connexion ───────────────────────────────────────────────────
-        # Formulaire anti-bot : champs leurres (userid/userkey) + vrais champs obfusqués.
-        # Stratégie : override window.fs() (appelée par le bouton Entrer) pour
-        # supprimer les vérifications anti-bot, puis clic JS direct sur le bouton.
         print("  Chargement de la page de connexion...")
         page.goto(CLUB_URL, wait_until="load", timeout=30000)
 
@@ -108,25 +105,13 @@ def reserve_court(target_tuesday: datetime, rain_expected: bool) -> None:
             print(f"  URL : {page.url}")
 
         page.wait_for_selector('input[name="userid"]', state="attached", timeout=15000)
-        print("  Formulaire détecté — remplissage des vrais champs...")
+        print("  Formulaire détecté.")
 
-        # Remplir les vrais champs (non-leurres)
-        real_user = page.locator('input[type="text"]:not([name="userid"])')
-        real_user.fill(USERNAME)
-
-        real_pass = page.locator('input[type="password"]:not([name="userkey"])')
-        real_pass.fill(PASSWORD)
-
-        time.sleep(0.5)
-
-        # Remplir aussi le leurre userkey par sécurité (fsmd5 peut le lire)
-        page.evaluate(f"document.querySelector('input[name=\"userkey\"]').value = '{PASSWORD}'")
-
-        time.sleep(0.3)
-
-        # Override window.fs() : retire les vérifications anti-bot.
-        # Le bouton Entrer a onclick qui appelle fs() — notre version bypasse les checks.
-        # idact et les champs fingerprinting sont déjà remplis par le site au chargement.
+        # IMPORTANT : override window.fs() AVANT de remplir les champs.
+        # Certains handlers onchange appellent fs() dès que le password est rempli.
+        # Notre version supprime les vérifications anti-bot (isTrusted, etc.)
+        # et laisse fsmd5() calculer le hash MD5 normalement avant submit.
+        print("  Override window.fs() avant remplissage...")
         page.evaluate("""
             window.fs = function() {
                 var f = document.forms[0];
@@ -136,8 +121,23 @@ def reserve_court(target_tuesday: datetime, rain_expected: bool) -> None:
             };
         """)
 
-        # Clic JS direct sur le bouton contenant "Entrer"
-        # (évite les problèmes de locator Playwright dans GitHub Actions)
+        print("  Remplissage des champs...")
+        # Vrai champ texte (pas le leurre 'userid')
+        real_user = page.locator('input[type="text"]:not([name="userid"])')
+        real_user.fill(USERNAME)
+
+        # Vrai champ password (pas le leurre 'userkey')
+        real_pass = page.locator('input[type="password"]:not([name="userkey"])')
+        real_pass.fill(PASSWORD)
+
+        time.sleep(0.3)
+
+        # Remplir aussi le leurre userkey par sécurité (fsmd5 peut le lire)
+        page.evaluate(f"document.querySelector('input[name="userkey"]').value = '{PASSWORD}'")
+
+        time.sleep(0.2)
+
+        # Clic JS direct sur le bouton "Entrer"
         page.evaluate("""
             var btns = document.querySelectorAll('button');
             for (var i = 0; i < btns.length; i++) {
@@ -193,7 +193,7 @@ def reserve_court(target_tuesday: datetime, rain_expected: bool) -> None:
             page.locator('#btn_plus').click(force=True)
             time.sleep(2)
 
-        # ── 4. Sélection du créneau 20h00 ─────────────────────────────────────
+        # ── 4. Sélection du créneau 20h00 ─────────────────────────────────
         booked = False
         for court_num in court_order:
             print(f"  Tentative terrain {court_num}...")
@@ -214,7 +214,7 @@ def reserve_court(target_tuesday: datetime, rain_expected: bool) -> None:
             time.sleep(1)
             page.screenshot(path="apres_clic_terrain.png")
             booked = True
-            print(f"  ✓ Terrain {court_num} (id={slot_id}) cliqué.")
+            print(f"  Terrain {court_num} (id={slot_id}) cliqué.")
             break
 
         if not booked:
@@ -224,13 +224,12 @@ def reserve_court(target_tuesday: datetime, rain_expected: bool) -> None:
                 "Voir erreur_aucun_terrain.png pour diagnostic."
             )
 
-        # ── 5. Attente du formulaire de réservation ────────────────────────────
+        # ── 5. Formulaire de réservation ───────────────────────────────────
         print("  Attente du formulaire de réservation...")
         confirm_btn = None
 
         for i in range(10):
             time.sleep(1)
-
             btn = page.locator(
                 '#modal_inscription button:has-text("Oui"), '
                 'button:has-text("Oui, je reserve"), '
@@ -244,9 +243,8 @@ def reserve_court(target_tuesday: datetime, rain_expected: bool) -> None:
                 break
 
         page.screenshot(path="formulaire_resa.png")
-        print("  Screenshot formulaire : formulaire_resa.png")
 
-        # ── 5b. Saisie du partenaire ────────────────────────────────────────
+        # ── 5b. Saisie du partenaire ───────────────────────────────────────
         print("  Recherche du champ partenaire...")
         partner_fields = page.locator(
             'input[placeholder*="artenaire"], '
@@ -265,7 +263,7 @@ def reserve_court(target_tuesday: datetime, rain_expected: bool) -> None:
         if hasattr(partner_fields, 'count') and partner_fields.count() > 0:
             pf = partner_fields.first if hasattr(partner_fields, 'first') else partner_fields
             if pf.is_visible():
-                print(f"  → Champ partenaire trouvé, saisie : {PARTNER}")
+                print(f"  → Saisie partenaire : {PARTNER}")
                 pf.fill(PARTNER)
                 time.sleep(1)
                 try:
@@ -278,13 +276,13 @@ def reserve_court(target_tuesday: datetime, rain_expected: bool) -> None:
                         suggestion.click(force=True)
                         print("  → Partenaire sélectionné via autocomplétion.")
                 except Exception:
-                    print("  (pas d'autocomplétion, texte saisi directement)")
+                    print("  (pas d'autocomplétion)")
             else:
                 print("  (champ partenaire non visible)")
         else:
             print("  (aucun champ partenaire détecté)")
 
-        # ── 6. Confirmation ────────────────────────────────────────────────────
+        # ── 6. Confirmation ────────────────────────────────────────────────
         if confirm_btn:
             print("  Clic sur le bouton de confirmation...")
             confirm_btn.click(force=True)
@@ -294,18 +292,16 @@ def reserve_court(target_tuesday: datetime, rain_expected: bool) -> None:
                 'button:has-text("Oui"), '
                 'button:has-text("Valider"), '
                 'button:has-text("Confirmer"), '
-                'button:has-text("Réserver"), '
-                'button:has-text("reserve")'
+                'button:has-text("Réserver")'
             )
             if fallback.count() > 0 and fallback.first.is_visible():
-                print("  Fallback : bouton de confirmation trouvé.")
                 fallback.first.click(force=True)
                 time.sleep(3)
             else:
-                print("  ⚠️  Aucun bouton de confirmation — le clic terrain a peut-être suffi.")
+                print("  Aucun bouton de confirmation — le clic terrain a peut-être suffi.")
 
         page.screenshot(path="confirmation.png")
-        print("  ✅ Réservation terminée (voir confirmation.png)")
+        print("  Réservation terminée (voir confirmation.png)")
         browser.close()
 
 
@@ -325,7 +321,6 @@ if __name__ == "__main__":
 
     print("Vérification météo (Open-Meteo)...")
     rain = check_rain_forecast(target_tuesday)
-    rain_str = "Pluie prévue : terrain couvert" if rain else "Pas de pluie : terrain extérieur"
-    print(f"  → {rain_str}\n")
+    print(f"  → {'Pluie prévue : terrain couvert' if rain else 'Pas de pluie : terrain extérieur'}\n")
 
     reserve_court(target_tuesday, rain)
