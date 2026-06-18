@@ -111,33 +111,31 @@ def reserve_court(target_tuesday: datetime, rain_expected: bool) -> None:
         page.wait_for_selector('input[name="userid"]', state="attached", timeout=15000)
         print("  Formulaire detecte.")
 
-        # Tout en un seul evaluate() f-string : override fs + fill + click.
-        # Les appels evaluate() separes echouent car ics.php fait une navigation JS interne.
-        # On incorpore les valeurs directement dans le JS via f-string pour eviter arguments[].
-        print("  Login atomique (override fs + fill + click)...")
+        # Approche directe : fill + fsmd5() + HTMLFormElement.prototype.submit.call(f)
+        # On bypasse entierement fs() et le bouton (qui verifiait isTrusted).
+        print("  Login atomique (fill + fsmd5 + submit direct)...")
         page.evaluate(f"""
             (function() {{
-                window.fs = function() {{
-                    var f = document.forms[0];
-                    if (!f) return;
-                    if (typeof fsmd5 === 'function') {{ try {{ fsmd5(); }} catch(e) {{}} }}
-                    f.submit();
-                }};
+                var f = document.forms[0];
+                if (!f) return;
+
+                // Remplir identifiant (champ reel, pas le honeypot userid)
                 var inputs = document.querySelectorAll('input[type="text"]');
                 for (var i = 0; i < inputs.length; i++) {{
                     if (inputs[i].name !== 'userid') {{ inputs[i].value = '{USERNAME}'; break; }}
                 }}
+
+                // Remplir mot de passe (champ reel, pas le honeypot userkey)
                 var pinputs = document.querySelectorAll('input[type="password"]');
                 for (var i = 0; i < pinputs.length; i++) {{
                     if (pinputs[i].name !== 'userkey') {{ pinputs[i].value = '{PASSWORD}'; break; }}
                 }}
-                var btns = document.querySelectorAll('button');
-                for (var i = 0; i < btns.length; i++) {{
-                    if (btns[i].innerText && btns[i].innerText.indexOf('Entrer') >= 0) {{
-                        btns[i].click();
-                        break;
-                    }}
-                }}
+
+                // Hasher le mot de passe via fsmd5 (obligatoire cote serveur)
+                if (typeof fsmd5 === 'function') {{ try {{ fsmd5(); }} catch(e) {{}} }}
+
+                // Soumettre directement sans passer par fs() ni le bouton
+                HTMLFormElement.prototype.submit.call(f);
             }})();
         """)
         print("  Login soumis.")
