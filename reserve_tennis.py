@@ -164,7 +164,7 @@ def reserve_court(target_tuesday: datetime, rain_expected: bool) -> None:
                 pass
             time.sleep(1)
 
-                if not planning_loaded:
+        if not planning_loaded:
             page.screenshot(path="apres_login.png")
             print(f"  URL erreur : {page.url}")
             try:
