@@ -80,7 +80,7 @@ def reserve_court(target_tuesday: datetime, rain_expected: bool) -> None:
 
     with sync_playwright() as p:
         browser = p.chromium.launch(
-            headless=False,  # navigateur visible via Xvfb (contourne la détection headless)
+            headless=False,
             args=[
                 '--disable-blink-features=AutomationControlled',
                 '--no-sandbox',
@@ -95,55 +95,75 @@ def reserve_court(target_tuesday: datetime, rain_expected: bool) -> None:
         stealth_sync(page)
 
         # ── 1. Connexion ───────────────────────────────────────────────────
-        # Le site présente un formulaire avec 4 champs visibles :
-        #   - userid / userkey  → leurres (cachés via CSS, offsetParent=null)
-        #   - [nom_obfusqué_text] / [nom_obfusqué_password] → vrais champs
-        # Les noms obfusqués changent à chaque chargement de page.
-        # La méthode fiable : cibler les champs dont le nom N'EST PAS
-        # "userid" ou "userkey" (les leurres ont toujours ces noms fixes).
-        # Le clic sur "Entrer" appelle fsmd5() qui lit le vrai champ password,
-        # calcule le MD5, et soumet le formulaire.
         print("  Chargement de la page de connexion...")
         page.goto(CLUB_URL, wait_until="load", timeout=30000)
 
-        # Attendre la redirection JS vers ics.php
         try:
             page.wait_for_url("**/ics.php**", timeout=20000)
             print(f"  Redirigé vers : {page.url}")
         except PlaywrightTimeoutError:
             print(f"  URL : {page.url}")
 
-        # Attendre que le formulaire soit prêt
         page.wait_for_selector('input[name="userid"]', state="attached", timeout=15000)
         print("  Formulaire détecté — remplissage des vrais champs...")
 
-        # Remplir le vrai champ texte (username) — pas le leurre "userid"
-        # (les leurres sont cachés via CSS, offsetParent=null)
         real_user = page.locator('input[type="text"]:not([name="userid"])')
         real_user.fill(USERNAME)
 
-        # Remplir le vrai champ password — pas le leurre "userkey"
         real_pass = page.locator('input[type="password"]:not([name="userkey"])')
         real_pass.fill(PASSWORD)
 
         time.sleep(0.5)
 
-        # Mesure défensive : renseigner aussi "userkey" (leurre) via JS.
-        # La source exacte lue par fsmd5() (vrai champ ou leurre) est inconnue ;
-        # remplir les deux garantit que fsmd5() dispose du mot de passe.
         page.evaluate(f"document.querySelector('input[name=\"userkey\"]').value = '{PASSWORD}'")
 
         time.sleep(0.3)
 
-        # fs() contient des vérifications anti-bot qui bloquent la soumission
-        # même avec headless=False. On contourne via form.submit() après fsmd5().
-        # headless=False garantit que le planning AJAX chargera après la connexion.
+        # Stratégie : override window.fs() pour supprimer ses vérifications anti-bot,
+        # puis cliquer Entrer normalement. Le clic déclenche onclick="fs()" qui appelle
+        # notre version allégée (fsmd5 + submit), sans les checks isTrusted etc.
+        # Avantage vs form.submit() direct : le serveur reçoit tous les champs que fs()
+        # aurait remplis (idact, hauteur_ecran, largeur_ecran, ping*, etc.).
         page.evaluate("""
-            document.forms[0].idact.value = '101';
-            if (typeof fsmd5 === 'function') fsmd5();
-            document.forms[0].submit();
+            window.fs = function() {
+                var f = document.forms[0];
+                f.idact.value = '101';
+                if (f['hauteur_ecran'])  f['hauteur_ecran'].value  = '768';
+                if (f['largeur_ecran'])  f['largeur_ecran'].value  = '1366';
+                if (f['pingmax'])        f['pingmax'].value         = '127';
+                if (f['pingmin'])        f['pingmin'].value         = '23';
+                if (typeof fsmd5 === 'function') { try { fsmd5(); } catch(e) {} }
+                f.submit();
+            };
         """)
-        print("  Formulaire soumis.")
+
+        try:
+            btn = page.locator(
+                'button:has-text("Entrer"), '
+                'input[type="submit"][value*="ntrer"], '
+                'a:has-text("Entrer")'
+            )
+            if btn.count() > 0:
+                btn.first.click(force=True)
+                print("  Bouton Entrer cliqué (fs() overridée).")
+            else:
+                page.locator('input[type="submit"], button[type="submit"]').first.click(force=True)
+                print("  Bouton submit cliqué (fallback).")
+        except Exception as e:
+            print(f"  Clic échoué ({e}), fallback form.submit() direct.")
+            page.evaluate("""
+                document.forms[0].idact.value = '101';
+                if (typeof fsmd5 === 'function') { try { fsmd5(); } catch(e) {} }
+                document.forms[0].submit();
+            """)
+
+        print("  Formulaire soumis, attente de la navigation...")
+
+        try:
+            page.wait_for_load_state("networkidle", timeout=15000)
+            print(f"  Navigation stable — URL : {page.url}")
+        except PlaywrightTimeoutError:
+            print(f"  (networkidle timeout) URL : {page.url}")
 
         # ── 2. Attente du planning ─────────────────────────────────────────
         print("  Attente du planning (peut prendre 20-30s)...")
@@ -165,8 +185,10 @@ def reserve_court(target_tuesday: datetime, rain_expected: bool) -> None:
             print(f"  URL au moment de l'erreur : {page.url}")
             try:
                 print(f"  Titre : {page.title()}")
-            except Exception:
-                pass
+                body_text = page.locator('body').inner_text(timeout=3000)
+                print(f"  Contenu page (500 chars) : {repr(body_text[:500])}")
+            except Exception as e:
+                print(f"  (impossible de lire body : {e})")
             raise RuntimeError("Planning non chargé après 90s. Voir apres_login.png")
 
         print("  Connecté et planning chargé.")
@@ -181,9 +203,6 @@ def reserve_court(target_tuesday: datetime, rain_expected: bool) -> None:
             time.sleep(2)
 
         # ── 4. Sélection du créneau 20h00 ─────────────────────────────────────
-        # Les créneaux libres ont le texte "20h" (ou vide).
-        # Le clic via Playwright (isTrusted=true) déclenche les handlers jQuery
-        # au niveau document, ce qui ouvre le formulaire de réservation.
         booked = False
         for court_num in court_order:
             print(f"  Tentative terrain {court_num}...")
@@ -215,11 +234,6 @@ def reserve_court(target_tuesday: datetime, rain_expected: bool) -> None:
             )
 
         # ── 5. Attente et gestion du formulaire post-clic ─────────────────────
-        # Après un clic trusté, le site peut :
-        #   a) Afficher un formulaire inline dans bloc_reservation
-        #   b) Ouvrir un modal jqmWindow (ex: modal_inscription)
-        #   c) Recharger la page avec un formulaire de confirmation
-        # On attend jusqu'à 10s en cherchant tout bouton de confirmation.
         print("  Attente du formulaire de réservation...")
         confirm_btn = None
         partner_input_found = None
@@ -227,7 +241,6 @@ def reserve_court(target_tuesday: datetime, rain_expected: bool) -> None:
         for i in range(10):
             time.sleep(1)
 
-            # Chercher un bouton de confirmation dans les modals ou la page
             btn = page.locator(
                 '#modal_inscription button:has-text("Oui"), '
                 'button:has-text("Oui, je reserve"), '
@@ -240,7 +253,6 @@ def reserve_court(target_tuesday: datetime, rain_expected: bool) -> None:
                 print(f"  → Bouton de confirmation trouvé à t+{i+1}s.")
                 break
 
-            # Détecter si un champ partenaire est visible (pour logging)
             partner_check = page.locator('input[placeholder*="artenaire"], input[name*="artenaire"]')
             if partner_check.count() > 0 and partner_check.first.is_visible():
                 partner_input_found = True
@@ -248,16 +260,14 @@ def reserve_court(target_tuesday: datetime, rain_expected: bool) -> None:
         page.screenshot(path="formulaire_resa.png")
         print(f"  Screenshot formulaire : formulaire_resa.png")
 
-        # ── 5b. Saisie du partenaire (si un champ est visible) ────────────────
+        # ── 5b. Saisie du partenaire ────────────────────────────────────────
         print(f"  Recherche du champ partenaire...")
-        # Cherche les champs partenaire par attributs reconnaissables
         partner_fields = page.locator(
             'input[placeholder*="artenaire"], '
             'input[placeholder*="artner"], '
             'input[name*="artenaire"], '
             'input[name*="artner"]'
         )
-        # Fallback : tout input texte visible sauf le sélecteur de date
         if partner_fields.count() == 0:
             all_text_inputs = page.locator('input[type="text"]')
             for idx in range(all_text_inputs.count()):
@@ -272,7 +282,6 @@ def reserve_court(target_tuesday: datetime, rain_expected: bool) -> None:
                 print(f"  → Champ partenaire trouvé, saisie : {PARTNER}")
                 pf.fill(PARTNER)
                 time.sleep(1)
-                # Essayer l'autocomplétion
                 try:
                     suggestion = page.locator(
                         f'li:has-text("{PARTNER}"), '
@@ -287,7 +296,7 @@ def reserve_court(target_tuesday: datetime, rain_expected: bool) -> None:
             else:
                 print("  (champ partenaire non visible)")
         else:
-            print("  (aucun champ partenaire détecté — la réservation peut ne pas en demander)")
+            print("  (aucun champ partenaire détecté)")
 
         # ── 6. Clic sur le bouton de confirmation ────────────────────────────
         if confirm_btn:
@@ -295,7 +304,6 @@ def reserve_court(target_tuesday: datetime, rain_expected: bool) -> None:
             confirm_btn.click(force=True)
             time.sleep(3)
         else:
-            # Dernière tentative : chercher n'importe quel bouton de confirmation
             fallback = page.locator(
                 'button:has-text("Oui"), '
                 'button:has-text("Valider"), '
@@ -308,7 +316,7 @@ def reserve_court(target_tuesday: datetime, rain_expected: bool) -> None:
                 fallback.first.click(force=True)
                 time.sleep(3)
             else:
-                print("  ⚠️  Aucun bouton de confirmation trouvé — le clic sur le terrain a peut-être suffi.")
+                print("  ⚠️  Aucun bouton de confirmation trouvé.")
 
         page.screenshot(path="confirmation.png")
         print("  ✅ Réservation terminée (voir confirmation.png)")
@@ -322,7 +330,6 @@ if __name__ == "__main__":
     print(f"\n=== Réservation Tennis ===")
     print(f"Heure Paris : {now_paris.strftime('%A %d/%m/%Y %H:%M')}")
 
-    # Garde-fou : s'exécuter uniquement le mercredi à Paris
     # if now_paris.weekday() != 2:
     #     print(f"Ce n'est pas mercredi à Paris. Abandon.")
     #     sys.exit(0)
@@ -332,6 +339,6 @@ if __name__ == "__main__":
 
     print("Vérification météo (Open-Meteo)...")
     rain = check_rain_forecast(target_tuesday)
-    print(f"  → {'Pluie prévue : terrain couvert' if rain else 'Pas de pluie : terrain extérieur'}\n")
+    print(f"  → {{'Pluie prévue : terrain couvert' if rain else 'Pas de pluie : terrain extérieur'}}\n")
 
     reserve_court(target_tuesday, rain)
