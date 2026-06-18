@@ -2,6 +2,12 @@
 """
 Réservation automatique de terrain de tennis
 Tennis Club Issy-les-Moulineaux — plateforme Premier Service
+Logique :
+  - Lance le mercredi à 00h01 heure de Paris
+  - Réserve un terrain pour le mardi suivant à 20h00
+  - Si pluie prévue l'après-midi → terrain couvert (1-4)
+  - Si pas de pluie → terrain extérieur, préférence 7 ou 8
+  - Partenaire : Anthony Martin
 """
 
 import os
@@ -85,32 +91,38 @@ def reserve_court(target_tuesday: datetime, rain_expected: bool) -> None:
         stealth_sync(page)
 
         # ── 1. Connexion ───────────────────────────────────────────────────
+        # Le site présente un formulaire avec 4 champs visibles :
+        #   - userid / userkey  → leurres (cachés via CSS, offsetParent=null)
+        #   - [nom_obfusqué_text] / [nom_obfusqué_password] → vrais champs
+        # Les noms obfusqués changent à chaque chargement de page.
+        # La méthode fiable : cibler les champs dont le nom N'EST PAS
+        # "userid" ou "userkey" (les leurres ont toujours ces noms fixes).
+        # Le clic sur "Entrer" appelle fsmd5() qui lit le vrai champ password,
+        # calcule le MD5, et soumet le formulaire.
         print("  Chargement de la page de connexion...")
         page.goto(CLUB_URL, wait_until="load", timeout=30000)
 
-        # La page JS redirige automatiquement vers ics.php
+        # Attendre la redirection JS vers ics.php
         try:
             page.wait_for_url("**/ics.php**", timeout=20000)
             print(f"  Redirigé vers : {page.url}")
         except PlaywrightTimeoutError:
-            print(f"  Pas de redirection automatique, URL : {page.url}")
+            print(f"  URL : {page.url}")
 
-        # Attendre le formulaire
+        # Attendre que le formulaire soit prêt
         page.wait_for_selector('input[name="userid"]', state="attached", timeout=15000)
-        print("  Formulaire de login détecté.")
+        print("  Formulaire détecté — remplissage des vrais champs...")
 
-        # Injection directe des identifiants puis appel des fonctions JS
-        # exactement comme le fait le bouton "Entrer" :
-        #   onclick="idact='101'; fsmd5(); fs(document.forms[0]);"
-        # fsmd5() lit userkey.value, calcule le MD5, le met dans usermd5.
-        # fs() soumet le formulaire.
-        page.evaluate(f"""
-            document.querySelector('input[name="userid"]').value = {repr(USERNAME)};
-            document.querySelector('input[name="userkey"]').value = {repr(PASSWORD)};
-            document.forms[0].idact.value = '101';
-            fsmd5();
-            fs(document.forms[0]);
-        """)
+        # Remplir le vrai champ texte (username) — pas le leurre "userid"
+        real_user = page.locator('input[type="text"]:not([name="userid"])')
+        real_user.fill(USERNAME)
+
+        # Remplir le vrai champ password — pas le leurre "userkey"
+        real_pass = page.locator('input[type="password"]:not([name="userkey"])')
+        real_pass.fill(PASSWORD)
+
+        # Cliquer sur "Entrer" — déclenche fsmd5() + fs() côté JS
+        page.get_by_role("button", name="Entrer").click()
         print("  Formulaire soumis.")
 
         # ── 2. Attente du planning ─────────────────────────────────────────
@@ -132,7 +144,7 @@ def reserve_court(target_tuesday: datetime, rain_expected: bool) -> None:
             page.screenshot(path="apres_login.png")
             print(f"  URL au moment de l'erreur : {page.url}")
             try:
-                print(f"  Titre de la page : {page.title()}")
+                print(f"  Titre : {page.title()}")
             except Exception:
                 pass
             raise RuntimeError("Planning non chargé après 90s. Voir apres_login.png")
@@ -149,6 +161,8 @@ def reserve_court(target_tuesday: datetime, rain_expected: bool) -> None:
             time.sleep(2)
 
         # ── 4. Sélection du créneau 20h00 ─────────────────────────────────
+        # Chaque créneau est un <p id="{HH}_{MM}_{terrain_num}">
+        # Ex : id="20_0_7" = 20h00 sur TCIM-7
         booked = False
         for court_num in court_order:
             print(f"  Tentative terrain {court_num}...")
