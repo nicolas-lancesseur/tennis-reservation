@@ -111,45 +111,50 @@ def reserve_court(target_tuesday: datetime, rain_expected: bool) -> None:
         page.wait_for_selector('input[name="userid"]', state="attached", timeout=15000)
         print("  Formulaire detecte.")
 
-        # Approche directe : fill + fsmd5() + HTMLFormElement.prototype.submit.call(f)
+        # Approche directe : fill + fsmd5() + submit via expect_navigation
         # On bypasse entierement fs() et le bouton (qui verifiait isTrusted).
         print("  Login atomique (fill + fsmd5 + submit direct)...")
-        page.evaluate(f"""
-            (function() {{
-                var f = document.forms[0];
-                if (!f) return;
+        with page.expect_navigation(wait_until="networkidle", timeout=20000):
+            login_result = page.evaluate(f"""
+                (function() {{
+                    var f = document.forms[0];
+                    if (!f) return 'no-form';
 
-                // Remplir identifiant (champ reel, pas le honeypot userid)
-                var inputs = document.querySelectorAll('input[type="text"]');
-                for (var i = 0; i < inputs.length; i++) {{
-                    if (inputs[i].name !== 'userid') {{ inputs[i].value = '{USERNAME}'; break; }}
-                }}
+                    var inputs = document.querySelectorAll('input[type="text"]');
+                    var userFilled = false;
+                    for (var i = 0; i < inputs.length; i++) {{
+                        if (inputs[i].name !== 'userid') {{ inputs[i].value = '{USERNAME}'; userFilled = true; break; }}
+                    }}
 
-                // Remplir mot de passe (champ reel, pas le honeypot userkey)
-                var pinputs = document.querySelectorAll('input[type="password"]');
-                for (var i = 0; i < pinputs.length; i++) {{
-                    if (pinputs[i].name !== 'userkey') {{ pinputs[i].value = '{PASSWORD}'; break; }}
-                }}
+                    var pinputs = document.querySelectorAll('input[type="password"]');
+                    var passFilled = false;
+                    for (var i = 0; i < pinputs.length; i++) {{
+                        if (pinputs[i].name !== 'userkey') {{ pinputs[i].value = '{PASSWORD}'; passFilled = true; break; }}
+                    }}
 
-                // Hasher le mot de passe via fsmd5 (obligatoire cote serveur)
-                if (typeof fsmd5 === 'function') {{ try {{ fsmd5(); }} catch(e) {{}} }}
+                    var md5Called = false;
+                    if (typeof fsmd5 === 'function') {{ try {{ fsmd5(); md5Called = true; }} catch(e) {{}} }}
 
-                // Soumettre directement sans passer par fs() ni le bouton
-                HTMLFormElement.prototype.submit.call(f);
-            }})();
-        """)
-        print("  Login soumis.")
-
-        try:
-            page.wait_for_load_state("networkidle", timeout=15000)
-            print(f"  Navigation stable - URL : {page.url}")
-        except PlaywrightTimeoutError:
-            print(f"  (networkidle timeout) URL : {page.url}")
+                    try {{
+                        HTMLFormElement.prototype.submit.call(f);
+                        return 'ok:user=' + userFilled + ',pass=' + passFilled + ',md5=' + md5Called;
+                    }} catch(e) {{
+                        return 'err:' + e.message;
+                    }}
+                }})();
+            """)
+        print(f"  Evaluate result: {login_result}")
+        print(f"  Post-login URL : {page.url}")
 
         # 2. Attente du planning
         print("  Attente du planning (peut prendre 20-30s)...")
         planning_loaded = False
-        for _ in range(90):
+        for i in range(90):
+            if i % 15 == 0:
+                try:
+                    print(f"  t+{i}s URL={page.url} title={page.title()}")
+                except Exception:
+                    pass
             try:
                 found = page.evaluate("() => document.getElementById('btn_plus') !== null")
                 if found:
@@ -159,7 +164,7 @@ def reserve_court(target_tuesday: datetime, rain_expected: bool) -> None:
                 pass
             time.sleep(1)
 
-        if not planning_loaded:
+                if not planning_loaded:
             page.screenshot(path="apres_login.png")
             print(f"  URL erreur : {page.url}")
             try:
