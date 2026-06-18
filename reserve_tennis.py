@@ -111,35 +111,35 @@ def reserve_court(target_tuesday: datetime, rain_expected: bool) -> None:
         page.wait_for_selector('input[name="userid"]', state="attached", timeout=15000)
         print("  Formulaire detecte.")
 
-        # Tout en un seul evaluate() atomique : override fs + fill + click.
-        # Plusieurs evaluate() separees echouent car ics.php fait une navigation JS interne
-        # qui detruit le contexte entre les appels.
+        # Tout en un seul evaluate() f-string : override fs + fill + click.
+        # Les appels evaluate() separes echouent car ics.php fait une navigation JS interne.
+        # On incorpore les valeurs directement dans le JS via f-string pour eviter arguments[].
         print("  Login atomique (override fs + fill + click)...")
-        page.evaluate("""
-            (function(u, p) {
-                window.fs = function() {
+        page.evaluate(f"""
+            (function() {{
+                window.fs = function() {{
                     var f = document.forms[0];
                     if (!f) return;
-                    if (typeof fsmd5 === 'function') { try { fsmd5(); } catch(e) {} }
+                    if (typeof fsmd5 === 'function') {{ try {{ fsmd5(); }} catch(e) {{}} }}
                     f.submit();
-                };
+                }};
                 var inputs = document.querySelectorAll('input[type="text"]');
-                for (var i = 0; i < inputs.length; i++) {
-                    if (inputs[i].name !== 'userid') { inputs[i].value = u; break; }
-                }
+                for (var i = 0; i < inputs.length; i++) {{
+                    if (inputs[i].name !== 'userid') {{ inputs[i].value = '{USERNAME}'; break; }}
+                }}
                 var pinputs = document.querySelectorAll('input[type="password"]');
-                for (var i = 0; i < pinputs.length; i++) {
-                    if (pinputs[i].name !== 'userkey') { pinputs[i].value = p; break; }
-                }
+                for (var i = 0; i < pinputs.length; i++) {{
+                    if (pinputs[i].name !== 'userkey') {{ pinputs[i].value = '{PASSWORD}'; break; }}
+                }}
                 var btns = document.querySelectorAll('button');
-                for (var i = 0; i < btns.length; i++) {
-                    if (btns[i].innerText && btns[i].innerText.indexOf('Entrer') >= 0) {
+                for (var i = 0; i < btns.length; i++) {{
+                    if (btns[i].innerText && btns[i].innerText.indexOf('Entrer') >= 0) {{
                         btns[i].click();
                         break;
-                    }
-                }
-            })(arguments[0], arguments[1]);
-        """, [USERNAME, PASSWORD])
+                    }}
+                }}
+            }})();
+        """)
         print("  Login soumis.")
 
         try:
