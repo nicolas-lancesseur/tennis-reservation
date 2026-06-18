@@ -111,42 +111,41 @@ def reserve_court(target_tuesday: datetime, rain_expected: bool) -> None:
         page.wait_for_selector('input[name="userid"]', state="attached", timeout=15000)
         print("  Formulaire detecte.")
 
-        # Approche directe : fill + fsmd5() + submit via expect_navigation
-        # On bypasse entierement fs() et le bouton (qui verifiait isTrusted).
-        print("  Login atomique (fill + fsmd5 + submit direct)...")
-        with page.expect_navigation(wait_until="networkidle", timeout=20000):
-            login_result = page.evaluate(f"""
-                (function() {{
-                    var f = document.forms[0];
-                    if (!f) return 'no-form';
-
-                    var inputs = document.querySelectorAll('input[type="text"]');
-                    var userFilled = false;
-                    for (var i = 0; i < inputs.length; i++) {{
-                        if (inputs[i].name !== 'userid') {{ inputs[i].value = '{USERNAME}'; userFilled = true; break; }}
+        # Spoofing Event.prototype.isTrusted pour que fs() passe son check anti-bot.
+        # fs() verifie event.isTrusted ; on override le getter avant le click.
+        print("  Login atomique (isTrusted spoof + click Entrer)...")
+        page.evaluate(f"""
+            (function() {{
+                Object.defineProperty(Event.prototype, 'isTrusted', {{
+                    get: function() {{ return true; }},
+                    configurable: true
+                }});
+                var inputs = document.querySelectorAll('input[type="text"]');
+                for (var i = 0; i < inputs.length; i++) {{
+                    if (inputs[i].name !== 'userid') {{ inputs[i].value = '{USERNAME}'; break; }}
+                }}
+                var pinputs = document.querySelectorAll('input[type="password"]');
+                for (var i = 0; i < pinputs.length; i++) {{
+                    if (pinputs[i].name !== 'userkey') {{ pinputs[i].value = '{PASSWORD}'; break; }}
+                }}
+                var btns = document.querySelectorAll('button');
+                for (var i = 0; i < btns.length; i++) {{
+                    if (btns[i].innerText && btns[i].innerText.indexOf('Entrer') >= 0) {{
+                        btns[i].click();
+                        break;
                     }}
+                }}
+            }})();
+        """)
+        print("  Login soumis.")
+        time.sleep(2)
+        try:
+            page.wait_for_load_state("networkidle", timeout=20000)
+            print(f"  Post-login URL : {page.url}")
+        except PlaywrightTimeoutError:
+            print(f"  (networkidle timeout) URL : {page.url}")
 
-                    var pinputs = document.querySelectorAll('input[type="password"]');
-                    var passFilled = false;
-                    for (var i = 0; i < pinputs.length; i++) {{
-                        if (pinputs[i].name !== 'userkey') {{ pinputs[i].value = '{PASSWORD}'; passFilled = true; break; }}
-                    }}
-
-                    var md5Called = false;
-                    if (typeof fsmd5 === 'function') {{ try {{ fsmd5(); md5Called = true; }} catch(e) {{}} }}
-
-                    try {{
-                        HTMLFormElement.prototype.submit.call(f);
-                        return 'ok:user=' + userFilled + ',pass=' + passFilled + ',md5=' + md5Called;
-                    }} catch(e) {{
-                        return 'err:' + e.message;
-                    }}
-                }})();
-            """)
-        print(f"  Evaluate result: {login_result}")
-        print(f"  Post-login URL : {page.url}")
-
-        # 2. Attente du planning
+                # 2. Attente du planning
         print("  Attente du planning (peut prendre 20-30s)...")
         planning_loaded = False
         for i in range(90):
