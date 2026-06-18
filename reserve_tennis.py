@@ -2,12 +2,6 @@
 """
 Reservation automatique de terrain de tennis
 Tennis Club Issy-les-Moulineaux -- plateforme Premier Service
-Logique :
-- Lance le mercredi a 00h01 heure de Paris
-- Reserve un terrain pour le mardi suivant a 20h00
-- Si pluie prevue l'apres-midi -> terrain couvert (1-4)
-- Si pas de pluie -> terrain exterieur, preference 7 ou 8
-- Partenaire : Anthony Martin
 """
 
 import os
@@ -19,54 +13,46 @@ from zoneinfo import ZoneInfo
 from playwright.sync_api import sync_playwright, TimeoutError as PlaywrightTimeoutError
 from playwright_stealth import stealth_sync
 
-# Configuration
 CLUB_URL = "https://www.premier-service.fr/_start/index.php?club=57920018"
 USERNAME = os.environ["TENNIS_USERNAME"]
 PASSWORD = os.environ["TENNIS_PASSWORD"]
 PARTNER = "Anthony Martin"
 PARIS_TZ = ZoneInfo("Europe/Paris")
-
 LATITUDE = 48.8234
 LONGITUDE = 2.2735
 RAIN_THRESHOLD = 40
-
 USER_AGENT = (
     'Mozilla/5.0 (Windows NT 10.0; Win64; x64) '
     'AppleWebKit/537.36 (KHTML, like Gecko) '
     'Chrome/125.0.0.0 Safari/537.36'
 )
 
-def get_next_tuesday(from_date: datetime) -> datetime:
+def get_next_tuesday(from_date):
     days_ahead = (1 - from_date.weekday()) % 7
     if days_ahead == 0:
         days_ahead = 7
     return from_date + timedelta(days=days_ahead)
 
-def check_rain_forecast(target_date: datetime) -> bool:
+def check_rain_forecast(target_date):
     url = "https://api.open-meteo.com/v1/forecast"
     params = {
-        "latitude": LATITUDE,
-        "longitude": LONGITUDE,
+        "latitude": LATITUDE, "longitude": LONGITUDE,
         "hourly": "precipitation_probability",
-        "timezone": "Europe/Paris",
-        "forecast_days": 14,
+        "timezone": "Europe/Paris", "forecast_days": 14,
     }
     resp = requests.get(url, params=params, timeout=15)
     resp.raise_for_status()
     data = resp.json()
-
     target_str = target_date.strftime("%Y-%m-%d")
     afternoon = {f"{target_str}T{h:02d}:00" for h in range(14, 21)}
-
     max_prob = 0
     for t, p in zip(data["hourly"]["time"], data["hourly"]["precipitation_probability"]):
         if t in afternoon:
             max_prob = max(max_prob, p)
-
     print(f"  Probabilite de pluie maximale (14h-20h) : {max_prob}%")
     return max_prob >= RAIN_THRESHOLD
 
-def reserve_court(target_tuesday: datetime, rain_expected: bool) -> None:
+def reserve_court(target_tuesday, rain_expected):
     court_order = [1, 2, 3, 4] if rain_expected else [7, 8, 5, 6, 9]
     court_type = "couvert" if rain_expected else "exterieur"
     print(f"  Type de terrain : {court_type} - ordre : {court_order}")
@@ -74,20 +60,13 @@ def reserve_court(target_tuesday: datetime, rain_expected: bool) -> None:
     with sync_playwright() as p:
         browser = p.chromium.launch(
             headless=False,
-            args=[
-                '--disable-blink-features=AutomationControlled',
-                '--no-sandbox',
-                '--disable-setuid-sandbox',
-            ]
+            args=['--disable-blink-features=AutomationControlled', '--no-sandbox', '--disable-setuid-sandbox']
         )
-        context = browser.new_context(
-            viewport={"width": 1366, "height": 768},
-            user_agent=USER_AGENT,
-        )
+        context = browser.new_context(viewport={"width": 1366, "height": 768}, user_agent=USER_AGENT)
         page = context.new_page()
         stealth_sync(page)
 
-        # Intercepter POST login pour diagnostiquer les donnees envoyees au serveur
+        # Intercepter TOUTES les requetes pour diagnostiquer
         def handle_route(route, request):
             if request.method == 'POST':
                 print(f"  INTERCEPT POST: {request.url}")
@@ -98,51 +77,110 @@ def reserve_court(target_tuesday: datetime, rain_expected: bool) -> None:
             route.continue_()
         page.route("**/*", handle_route)
 
-        # 1. Connexion
+        # 1. Chargement
         print("  Chargement de la page de connexion...")
         page.goto(CLUB_URL, wait_until="load", timeout=30000)
-
         try:
             page.wait_for_url("**/ics.php**", timeout=20000)
             print(f"  Redirige vers : {page.url}")
         except PlaywrightTimeoutError:
             print(f"  URL : {page.url}")
-
-        # Attendre que la page soit completement chargee avant de remplir les champs.
         try:
             page.wait_for_load_state("load", timeout=15000)
-            print(f"  Page chargee - URL : {page.url}")
         except PlaywrightTimeoutError:
-            print("  (load timeout, on continue)")
-
+            pass
         page.wait_for_selector('input[name="userid"]', state="attached", timeout=15000)
         print("  Formulaire detecte.")
 
-        # Spoofing Event.prototype.isTrusted pour que fs() passe son check anti-bot.
-        print("  Login atomique (isTrusted spoof + click Entrer)...")
-        page.evaluate(f"""
+        # 2. Diagnostic approfondi du formulaire + soumission
+        print("  Diagnostic formulaire + login...")
+        diag = page.evaluate(f"""
             (function() {{
+                var result = {{}};
+
+                // Lister tous les champs du formulaire
+                var f = document.querySelector('form');
+                result.formFound = !!f;
+                result.fields = [];
+                if (f) {{
+                    var els = f.querySelectorAll('input, select, textarea');
+                    for (var i = 0; i < els.length; i++) {{
+                        result.fields.push({{
+                            name: els[i].name,
+                            type: els[i].type,
+                            valLen: els[i].value.length,
+                            display: getComputedStyle(els[i]).display
+                        }});
+                    }}
+                }}
+
+                // Intercepter form.submit
+                result.submitCalled = false;
+                result.submitFields = null;
+                var origSubmit = HTMLFormElement.prototype.submit;
+                HTMLFormElement.prototype.submit = function() {{
+                    result.submitCalled = true;
+                    var sf = {{}};
+                    var els2 = this.querySelectorAll('input, select, textarea');
+                    for (var i = 0; i < els2.length; i++) {{
+                        sf[els2[i].name + '|' + els2[i].type] = els2[i].value.substring(0, 40);
+                    }}
+                    result.submitFields = sf;
+                    origSubmit.call(this);
+                }};
+
+                // isTrusted spoof
                 Object.defineProperty(Event.prototype, 'isTrusted', {{
                     get: function() {{ return true; }},
                     configurable: true
                 }});
+
+                // Remplir username
                 var inputs = document.querySelectorAll('input[type="text"]');
+                result.userFieldName = null;
                 for (var i = 0; i < inputs.length; i++) {{
-                    if (inputs[i].name !== 'userid') {{ inputs[i].value = '{USERNAME}'; break; }}
+                    if (inputs[i].name !== 'userid') {{
+                        inputs[i].value = '{USERNAME}';
+                        result.userFieldName = inputs[i].name;
+                        break;
+                    }}
                 }}
+
+                // Remplir password
                 var pinputs = document.querySelectorAll('input[type="password"]');
+                result.passFieldName = null;
                 for (var i = 0; i < pinputs.length; i++) {{
-                    if (pinputs[i].name !== 'userkey') {{ pinputs[i].value = '{PASSWORD}'; break; }}
+                    if (pinputs[i].name !== 'userkey') {{
+                        pinputs[i].value = '{PASSWORD}';
+                        result.passFieldName = pinputs[i].name;
+                        break;
+                    }}
                 }}
+
+                // Cliquer bouton Entrer
                 var btns = document.querySelectorAll('button');
+                result.btnFound = false;
+                result.btnText = null;
                 for (var i = 0; i < btns.length; i++) {{
                     if (btns[i].innerText && btns[i].innerText.indexOf('Entrer') >= 0) {{
+                        result.btnFound = true;
+                        result.btnText = btns[i].innerText.trim();
                         btns[i].click();
                         break;
                     }}
                 }}
+
+                // Lire le champ password apres fsmd5 (s'il a ete transforme)
+                if (result.passFieldName) {{
+                    var pf = f ? f.querySelector('input[name="' + result.passFieldName + '"]') : null;
+                    result.passValAfterClick = pf ? pf.value.substring(0, 40) : 'not found';
+                }}
+
+                return JSON.stringify(result);
             }})();
         """)
+        print(f"  DIAG: {diag}")
+
         print("  Login soumis.")
         time.sleep(2)
         try:
@@ -151,8 +189,8 @@ def reserve_court(target_tuesday: datetime, rain_expected: bool) -> None:
         except PlaywrightTimeoutError:
             print(f"  (networkidle timeout) URL : {page.url}")
 
-        # 2. Attente du planning
-        print("  Attente du planning (peut prendre 20-30s)...")
+        # 3. Attente du planning
+        print("  Attente du planning...")
         planning_loaded = False
         for i in range(90):
             if i % 15 == 0:
@@ -182,31 +220,27 @@ def reserve_court(target_tuesday: datetime, rain_expected: bool) -> None:
 
         print("  Connecte et planning charge.")
 
-        # 3. Navigation vers le mardi cible
+        # 4. Navigation vers le mardi cible
         now_paris = datetime.now(PARIS_TZ)
         days_to_advance = (target_tuesday.date() - now_paris.date()).days
         print(f"  Navigation : +{days_to_advance} jour(s) vers {target_tuesday.strftime('%A %d/%m/%Y')}")
-
         for _ in range(days_to_advance):
             page.locator('#btn_plus').click(force=True)
             time.sleep(2)
 
-        # 4. Selection du creneau 20h00
+        # 5. Selection creneau 20h00
         booked = False
         for court_num in court_order:
             print(f"  Tentative terrain {court_num}...")
             slot_id = f"20_0_{court_num}"
             slot = page.locator(f'[id="{slot_id}"]')
-
             if slot.count() == 0:
                 print(f"  -> id={slot_id} introuvable.")
                 continue
-
             txt = slot.inner_text().strip()
             if txt not in ("", "20h"):
                 print(f"  -> Terrain {court_num} deja reserve ({txt[:40]}), on passe.")
                 continue
-
             print(f"  -> Terrain {court_num} disponible, clic...")
             slot.click(force=True)
             time.sleep(1)
@@ -219,10 +253,9 @@ def reserve_court(target_tuesday: datetime, rain_expected: bool) -> None:
             page.screenshot(path="erreur_aucun_terrain.png")
             raise RuntimeError("Aucun terrain disponible pour 20h.")
 
-        # 5. Formulaire de reservation
+        # 6. Formulaire de reservation
         print("  Attente du formulaire...")
         confirm_btn = None
-
         for i in range(10):
             time.sleep(1)
             btn = page.locator(
@@ -236,16 +269,13 @@ def reserve_court(target_tuesday: datetime, rain_expected: bool) -> None:
                 confirm_btn = btn.first
                 print(f"  -> Bouton confirmation trouve a t+{i+1}s.")
                 break
-
         page.screenshot(path="formulaire_resa.png")
 
-        # 5b. Saisie du partenaire
+        # 7. Partenaire
         print("  Recherche du champ partenaire...")
         partner_fields = page.locator(
-            'input[placeholder*="artenaire"], '
-            'input[placeholder*="artner"], '
-            'input[name*="artenaire"], '
-            'input[name*="artner"]'
+            'input[placeholder*="artenaire"], input[placeholder*="artner"], '
+            'input[name*="artenaire"], input[name*="artner"]'
         )
         if partner_fields.count() == 0:
             all_text_inputs = page.locator('input[type="text"]')
@@ -254,7 +284,6 @@ def reserve_court(target_tuesday: datetime, rain_expected: bool) -> None:
                 if inp.is_visible() and inp.get_attribute("id") != "CHAMP_SELECTEUR_JOUR":
                     partner_fields = inp
                     break
-
         if hasattr(partner_fields, 'count') and partner_fields.count() > 0:
             pf = partner_fields.first if hasattr(partner_fields, 'first') else partner_fields
             if pf.is_visible():
@@ -275,17 +304,15 @@ def reserve_court(target_tuesday: datetime, rain_expected: bool) -> None:
         else:
             print("  (aucun champ partenaire detecte)")
 
-        # 6. Confirmation
+        # 8. Confirmation
         if confirm_btn:
             print("  Clic confirmation...")
             confirm_btn.click(force=True)
             time.sleep(3)
         else:
             fallback = page.locator(
-                'button:has-text("Oui"), '
-                'button:has-text("Valider"), '
-                'button:has-text("Confirmer"), '
-                'button:has-text("Reserver")'
+                'button:has-text("Oui"), button:has-text("Valider"), '
+                'button:has-text("Confirmer"), button:has-text("Reserver")'
             )
             if fallback.count() > 0 and fallback.first.is_visible():
                 fallback.first.click(force=True)
