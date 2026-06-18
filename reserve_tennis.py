@@ -100,7 +100,15 @@ def reserve_court(target_tuesday: datetime, rain_expected: bool) -> None:
         except PlaywrightTimeoutError:
             print(f"  URL : {page.url}")
 
-        page.wait_for_selector('input[name="userid"]', state="attached", timeout=15000)
+        # Attendre que la page soit completement chargee avant de remplir les champs.
+        # Sans cela, Playwright detecte une navigation en cours et timeout sur fill().
+        try:
+            page.wait_for_load_state("load", timeout=15000)
+            print(f"  Page chargee - URL : {page.url}")
+        except PlaywrightTimeoutError:
+            print("  (load timeout, on continue)")
+
+        page.wait_for_selector('input[name="userid"]', state="visible", timeout=15000)
         print("  Formulaire detecte.")
 
         # Override window.fs() AVANT de remplir les champs.
