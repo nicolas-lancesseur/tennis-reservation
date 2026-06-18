@@ -114,6 +114,7 @@ def reserve_court(target_tuesday: datetime, rain_expected: bool) -> None:
         print("  Formulaire détecté — remplissage des vrais champs...")
 
         # Remplir le vrai champ texte (username) — pas le leurre "userid"
+        # (les leurres sont cachés via CSS, offsetParent=null)
         real_user = page.locator('input[type="text"]:not([name="userid"])')
         real_user.fill(USERNAME)
 
@@ -121,8 +122,16 @@ def reserve_court(target_tuesday: datetime, rain_expected: bool) -> None:
         real_pass = page.locator('input[type="password"]:not([name="userkey"])')
         real_pass.fill(PASSWORD)
 
-        # Cliquer sur "Entrer" — déclenche fsmd5() + fs() côté JS
-        page.get_by_role("button", name="Entrer").click()
+        time.sleep(0.5)
+
+        # Appeler fsmd5() pour calculer le MD5 depuis le vrai champ rempli,
+        # puis soumettre via form.submit() en contournant fs() qui contient
+        # des vérifications anti-bot bloquant la soumission en headless.
+        page.evaluate("""
+            document.forms[0].idact.value = '101';
+            if (typeof fsmd5 === 'function') fsmd5();
+            document.forms[0].submit();
+        """)
         print("  Formulaire soumis.")
 
         # ── 2. Attente du planning ─────────────────────────────────────────
