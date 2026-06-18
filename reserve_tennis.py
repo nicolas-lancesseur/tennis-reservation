@@ -1,13 +1,13 @@
 #!/usr/bin/env python3
 """
-Réservation automatique de terrain de tennis
-Tennis Club Issy-les-Moulineaux — plateforme Premier Service
+Reservation automatique de terrain de tennis
+Tennis Club Issy-les-Moulineaux -- plateforme Premier Service
 Logique :
-  - Lance le mercredi à 00h01 heure de Paris
-  - Réserve un terrain pour le mardi suivant à 20h00
-  - Si pluie prévue l'après-midi -> terrain couvert (1-4)
-  - Si pas de pluie -> terrain extérieur, préférence 7 ou 8
-  - Partenaire : Anthony Martin
+- Lance le mercredi a 00h01 heure de Paris
+- Reserve un terrain pour le mardi suivant a 20h00
+- Si pluie prevue l'apres-midi -> terrain couvert (1-4)
+- Si pas de pluie -> terrain exterieur, preference 7 ou 8
+- Partenaire : Anthony Martin
 """
 
 import os
@@ -20,14 +20,14 @@ from playwright.sync_api import sync_playwright, TimeoutError as PlaywrightTimeo
 from playwright_stealth import stealth_sync
 
 # Configuration
-CLUB_URL  = "https://www.premier-service.fr/_start/index.php?club=57920018"
-USERNAME  = os.environ["TENNIS_USERNAME"]
-PASSWORD  = os.environ["TENNIS_PASSWORD"]
-PARTNER   = "Anthony Martin"
-PARIS_TZ  = ZoneInfo("Europe/Paris")
+CLUB_URL = "https://www.premier-service.fr/_start/index.php?club=57920018"
+USERNAME = os.environ["TENNIS_USERNAME"]
+PASSWORD = os.environ["TENNIS_PASSWORD"]
+PARTNER = "Anthony Martin"
+PARIS_TZ = ZoneInfo("Europe/Paris")
 
-LATITUDE       = 48.8234
-LONGITUDE      = 2.2735
+LATITUDE = 48.8234
+LONGITUDE = 2.2735
 RAIN_THRESHOLD = 40
 
 USER_AGENT = (
@@ -36,13 +36,11 @@ USER_AGENT = (
     'Chrome/125.0.0.0 Safari/537.36'
 )
 
-
 def get_next_tuesday(from_date: datetime) -> datetime:
     days_ahead = (1 - from_date.weekday()) % 7
     if days_ahead == 0:
         days_ahead = 7
     return from_date + timedelta(days=days_ahead)
-
 
 def check_rain_forecast(target_date: datetime) -> bool:
     url = "https://api.open-meteo.com/v1/forecast"
@@ -68,10 +66,9 @@ def check_rain_forecast(target_date: datetime) -> bool:
     print(f"  Probabilite de pluie maximale (14h-20h) : {max_prob}%")
     return max_prob >= RAIN_THRESHOLD
 
-
 def reserve_court(target_tuesday: datetime, rain_expected: bool) -> None:
     court_order = [1, 2, 3, 4] if rain_expected else [7, 8, 5, 6, 9]
-    court_type  = "couvert" if rain_expected else "exterieur"
+    court_type = "couvert" if rain_expected else "exterieur"
     print(f"  Type de terrain : {court_type} - ordre : {court_order}")
 
     with sync_playwright() as p:
@@ -90,6 +87,17 @@ def reserve_court(target_tuesday: datetime, rain_expected: bool) -> None:
         page = context.new_page()
         stealth_sync(page)
 
+        # Intercepter POST login pour diagnostiquer les donnees envoyees au serveur
+        def handle_route(route, request):
+            if request.method == 'POST':
+                print(f"  INTERCEPT POST: {request.url}")
+                try:
+                    print(f"  POST data: {request.post_data}")
+                except Exception as e:
+                    print(f"  (post_data err: {e})")
+            route.continue_()
+        page.route("**/*", handle_route)
+
         # 1. Connexion
         print("  Chargement de la page de connexion...")
         page.goto(CLUB_URL, wait_until="load", timeout=30000)
@@ -101,7 +109,6 @@ def reserve_court(target_tuesday: datetime, rain_expected: bool) -> None:
             print(f"  URL : {page.url}")
 
         # Attendre que la page soit completement chargee avant de remplir les champs.
-        # Sans cela, Playwright detecte une navigation en cours et timeout sur fill().
         try:
             page.wait_for_load_state("load", timeout=15000)
             print(f"  Page chargee - URL : {page.url}")
@@ -112,7 +119,6 @@ def reserve_court(target_tuesday: datetime, rain_expected: bool) -> None:
         print("  Formulaire detecte.")
 
         # Spoofing Event.prototype.isTrusted pour que fs() passe son check anti-bot.
-        # fs() verifie event.isTrusted ; on override le getter avant le click.
         print("  Login atomique (isTrusted spoof + click Entrer)...")
         page.evaluate(f"""
             (function() {{
@@ -145,7 +151,7 @@ def reserve_court(target_tuesday: datetime, rain_expected: bool) -> None:
         except PlaywrightTimeoutError:
             print(f"  (networkidle timeout) URL : {page.url}")
 
-                # 2. Attente du planning
+        # 2. Attente du planning
         print("  Attente du planning (peut prendre 20-30s)...")
         planning_loaded = False
         for i in range(90):
@@ -177,7 +183,7 @@ def reserve_court(target_tuesday: datetime, rain_expected: bool) -> None:
         print("  Connecte et planning charge.")
 
         # 3. Navigation vers le mardi cible
-        now_paris       = datetime.now(PARIS_TZ)
+        now_paris = datetime.now(PARIS_TZ)
         days_to_advance = (target_tuesday.date() - now_paris.date()).days
         print(f"  Navigation : +{days_to_advance} jour(s) vers {target_tuesday.strftime('%A %d/%m/%Y')}")
 
@@ -290,7 +296,6 @@ def reserve_court(target_tuesday: datetime, rain_expected: bool) -> None:
         page.screenshot(path="confirmation.png")
         print("  Reservation terminee. Voir confirmation.png")
         browser.close()
-
 
 if __name__ == "__main__":
     now_paris = datetime.now(PARIS_TZ)
