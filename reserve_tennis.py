@@ -95,6 +95,9 @@ def reserve_court(target_tuesday: datetime, rain_expected: bool) -> None:
         stealth_sync(page)
 
         # ── 1. Connexion ───────────────────────────────────────────────────
+        # Formulaire anti-bot : champs leurres (userid/userkey) + vrais champs obfusqués.
+        # Stratégie : override window.fs() (appelée par le bouton Entrer) pour
+        # supprimer les vérifications anti-bot, puis clic JS direct sur le bouton.
         print("  Chargement de la page de connexion...")
         page.goto(CLUB_URL, wait_until="load", timeout=30000)
 
@@ -107,6 +110,7 @@ def reserve_court(target_tuesday: datetime, rain_expected: bool) -> None:
         page.wait_for_selector('input[name="userid"]', state="attached", timeout=15000)
         print("  Formulaire détecté — remplissage des vrais champs...")
 
+        # Remplir les vrais champs (non-leurres)
         real_user = page.locator('input[type="text"]:not([name="userid"])')
         real_user.fill(USERNAME)
 
@@ -115,50 +119,37 @@ def reserve_court(target_tuesday: datetime, rain_expected: bool) -> None:
 
         time.sleep(0.5)
 
+        # Remplir aussi le leurre userkey par sécurité (fsmd5 peut le lire)
         page.evaluate(f"document.querySelector('input[name=\"userkey\"]').value = '{PASSWORD}'")
 
         time.sleep(0.3)
 
-        # Stratégie : override window.fs() pour supprimer ses vérifications anti-bot,
-        # puis cliquer Entrer normalement. Le clic déclenche onclick="fs()" qui appelle
-        # notre version allégée (fsmd5 + submit), sans les checks isTrusted etc.
-        # Avantage vs form.submit() direct : le serveur reçoit tous les champs que fs()
-        # aurait remplis (idact, hauteur_ecran, largeur_ecran, ping*, etc.).
+        # Override window.fs() : retire les vérifications anti-bot.
+        # Le bouton Entrer a onclick qui appelle fs() — notre version bypasse les checks.
+        # idact et les champs fingerprinting sont déjà remplis par le site au chargement.
         page.evaluate("""
             window.fs = function() {
                 var f = document.forms[0];
-                f.idact.value = '101';
-                if (f['hauteur_ecran'])  f['hauteur_ecran'].value  = '768';
-                if (f['largeur_ecran'])  f['largeur_ecran'].value  = '1366';
-                if (f['pingmax'])        f['pingmax'].value         = '127';
-                if (f['pingmin'])        f['pingmin'].value         = '23';
+                if (!f) return;
                 if (typeof fsmd5 === 'function') { try { fsmd5(); } catch(e) {} }
                 f.submit();
             };
         """)
 
-        try:
-            btn = page.locator(
-                'button:has-text("Entrer"), '
-                'input[type="submit"][value*="ntrer"], '
-                'a:has-text("Entrer")'
-            )
-            if btn.count() > 0:
-                btn.first.click(force=True)
-                print("  Bouton Entrer cliqué (fs() overridée).")
-            else:
-                page.locator('input[type="submit"], button[type="submit"]').first.click(force=True)
-                print("  Bouton submit cliqué (fallback).")
-        except Exception as e:
-            print(f"  Clic échoué ({e}), fallback form.submit() direct.")
-            page.evaluate("""
-                document.forms[0].idact.value = '101';
-                if (typeof fsmd5 === 'function') { try { fsmd5(); } catch(e) {} }
-                document.forms[0].submit();
-            """)
+        # Clic JS direct sur le bouton contenant "Entrer"
+        # (évite les problèmes de locator Playwright dans GitHub Actions)
+        page.evaluate("""
+            var btns = document.querySelectorAll('button');
+            for (var i = 0; i < btns.length; i++) {
+                if (btns[i].innerText && btns[i].innerText.indexOf('Entrer') >= 0) {
+                    btns[i].click();
+                    break;
+                }
+            }
+        """)
+        print("  Bouton Entrer cliqué (fs() overridée, clic JS).")
 
-        print("  Formulaire soumis, attente de la navigation...")
-
+        # Laisser la navigation post-login se stabiliser
         try:
             page.wait_for_load_state("networkidle", timeout=15000)
             print(f"  Navigation stable — URL : {page.url}")
@@ -196,7 +187,7 @@ def reserve_court(target_tuesday: datetime, rain_expected: bool) -> None:
         # ── 3. Navigation vers le mardi cible ─────────────────────────────
         now_paris       = datetime.now(PARIS_TZ)
         days_to_advance = (target_tuesday.date() - now_paris.date()).days
-        print(f"  Navigation : +{days_to_advance} jour(s) → {target_tuesday.strftime('%A %d/%m/%Y')}")
+        print(f"  Navigation : +{days_to_advance} jour(s) vers {target_tuesday.strftime('%A %d/%m/%Y')}")
 
         for _ in range(days_to_advance):
             page.locator('#btn_plus').click(force=True)
@@ -210,7 +201,7 @@ def reserve_court(target_tuesday: datetime, rain_expected: bool) -> None:
             slot = page.locator(f'[id="{slot_id}"]')
 
             if slot.count() == 0:
-                print(f"  → id={slot_id} introuvable sur la page.")
+                print(f"  → id={slot_id} introuvable.")
                 continue
 
             txt = slot.inner_text().strip()
@@ -233,10 +224,9 @@ def reserve_court(target_tuesday: datetime, rain_expected: bool) -> None:
                 "Voir erreur_aucun_terrain.png pour diagnostic."
             )
 
-        # ── 5. Attente et gestion du formulaire post-clic ─────────────────────
+        # ── 5. Attente du formulaire de réservation ────────────────────────────
         print("  Attente du formulaire de réservation...")
         confirm_btn = None
-        partner_input_found = None
 
         for i in range(10):
             time.sleep(1)
@@ -253,15 +243,11 @@ def reserve_court(target_tuesday: datetime, rain_expected: bool) -> None:
                 print(f"  → Bouton de confirmation trouvé à t+{i+1}s.")
                 break
 
-            partner_check = page.locator('input[placeholder*="artenaire"], input[name*="artenaire"]')
-            if partner_check.count() > 0 and partner_check.first.is_visible():
-                partner_input_found = True
-
         page.screenshot(path="formulaire_resa.png")
-        print(f"  Screenshot formulaire : formulaire_resa.png")
+        print("  Screenshot formulaire : formulaire_resa.png")
 
         # ── 5b. Saisie du partenaire ────────────────────────────────────────
-        print(f"  Recherche du champ partenaire...")
+        print("  Recherche du champ partenaire...")
         partner_fields = page.locator(
             'input[placeholder*="artenaire"], '
             'input[placeholder*="artner"], '
@@ -298,9 +284,9 @@ def reserve_court(target_tuesday: datetime, rain_expected: bool) -> None:
         else:
             print("  (aucun champ partenaire détecté)")
 
-        # ── 6. Clic sur le bouton de confirmation ────────────────────────────
+        # ── 6. Confirmation ────────────────────────────────────────────────────
         if confirm_btn:
-            print(f"  Clic sur le bouton de confirmation...")
+            print("  Clic sur le bouton de confirmation...")
             confirm_btn.click(force=True)
             time.sleep(3)
         else:
@@ -316,7 +302,7 @@ def reserve_court(target_tuesday: datetime, rain_expected: bool) -> None:
                 fallback.first.click(force=True)
                 time.sleep(3)
             else:
-                print("  ⚠️  Aucun bouton de confirmation trouvé.")
+                print("  ⚠️  Aucun bouton de confirmation — le clic terrain a peut-être suffi.")
 
         page.screenshot(path="confirmation.png")
         print("  ✅ Réservation terminée (voir confirmation.png)")
@@ -339,6 +325,7 @@ if __name__ == "__main__":
 
     print("Vérification météo (Open-Meteo)...")
     rain = check_rain_forecast(target_tuesday)
-    print(f"  → {{'Pluie prévue : terrain couvert' if rain else 'Pas de pluie : terrain extérieur'}}\n")
+    rain_str = "Pluie prévue : terrain couvert" if rain else "Pas de pluie : terrain extérieur"
+    print(f"  → {rain_str}\n")
 
     reserve_court(target_tuesday, rain)
